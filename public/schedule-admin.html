@@ -266,6 +266,18 @@
     <!-- Upload tab -->
     <div id="tab-upload">
       <div class="card">
+        <h2>Create a route</h2>
+        <label for="newRouteCode">Route code</label>
+        <input type="text" id="newRouteCode" placeholder="e.g. R1-AIRPORT">
+        <label for="newRouteName">Route name</label>
+        <input type="text" id="newRouteName" placeholder="e.g. Airport Express">
+        <label for="newRouteDesc">Description (optional)</label>
+        <input type="text" id="newRouteDesc">
+        <button id="createRouteBtn">Create route</button>
+        <div class="status-line" id="createRouteStatus"></div>
+      </div>
+
+      <div class="card">
         <h2><span class="step">02</span> Choose a route</h2>
         <select id="routeSelect"></select>
         <div class="muted-small" id="routeMeta"></div>
@@ -291,8 +303,7 @@
         currently no working sign-in for invited accounts — the invite email / password-setup step
         hasn't been built yet on the backend. Until that exists, the reliable way to onboard someone
         is: they create their own account below (name, email, password), then you promote their role
-        in the roster table beneath it. Also note the system doesn't have a distinct "route manager"
-        role — the closest existing role is <strong>operator</strong>, which is what schedule uploads require.
+        in the roster table beneath it. Schedule uploads require the <strong>route_manager</strong> role.
       </div>
 
       <div class="card">
@@ -399,6 +410,32 @@
     });
   });
 
+  // ── Create route ───────────────────────────────────────────────────────
+  $('createRouteBtn').addEventListener('click', async () => {
+    const route_code = $('newRouteCode').value.trim();
+    const route_name = $('newRouteName').value.trim();
+    const description = $('newRouteDesc').value.trim();
+    if (!route_code || !route_name) {
+      setStatus($('createRouteStatus'), 'Route code and name are both required.', 'err');
+      return;
+    }
+    setStatus($('createRouteStatus'), 'Creating…', 'info');
+    try {
+      await api('/v1/routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route_code, route_name, description: description || null })
+      });
+      setStatus($('createRouteStatus'), `Route "${route_code}" created.`, 'ok');
+      $('newRouteCode').value = '';
+      $('newRouteName').value = '';
+      $('newRouteDesc').value = '';
+      await loadRoutes();
+    } catch (e) {
+      setStatus($('createRouteStatus'), 'Could not create route: ' + e.message, 'err');
+    }
+  });
+
   // ── Routes ─────────────────────────────────────────────────────────────
   async function loadRoutes() {
     try {
@@ -406,7 +443,7 @@
       state.routes = routes;
       const sel = $('routeSelect');
       sel.innerHTML = routes.map(r =>
-        `<option value="${r.id}">${r.route_code} — ${r.short_name} (${r.status})</option>`
+        `<option value="${r.id}">${r.route_code} — ${r.long_name || r.short_name} (${r.status})</option>`
       ).join('');
       updateRouteMeta();
     } catch (e) {
@@ -524,7 +561,7 @@
   });
 
   // ── Team: roster + role changes ───────────────────────────────────────
-  const ROLES = ['org_admin', 'operator', 'dispatcher', 'driver', 'passenger'];
+  const ROLES = ['org_admin', 'route_manager', 'dispatcher', 'driver', 'passenger'];
   async function loadRoster() {
     if (!state.orgId) return;
     try {
