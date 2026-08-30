@@ -269,8 +269,10 @@
         <h2>Create a route</h2>
         <label for="newRouteCode">Route code</label>
         <input type="text" id="newRouteCode" placeholder="e.g. R1-AIRPORT">
-        <label for="newRouteName">Route name</label>
-        <input type="text" id="newRouteName" placeholder="e.g. Airport Express">
+        <label for="newRouteShort">Short name</label>
+        <input type="text" id="newRouteShort" placeholder="e.g. Beaver Meadows">
+        <label for="newRouteLong">Long name</label>
+        <input type="text" id="newRouteLong" placeholder="e.g. Beaver Meadows/Hazleton to NYC via Paterson">
         <label for="newRouteDesc">Description (optional)</label>
         <input type="text" id="newRouteDesc">
         <button id="createRouteBtn">Create route</button>
@@ -413,10 +415,11 @@
   // ── Create route ───────────────────────────────────────────────────────
   $('createRouteBtn').addEventListener('click', async () => {
     const route_code = $('newRouteCode').value.trim();
-    const route_name = $('newRouteName').value.trim();
+    const short_name = $('newRouteShort').value.trim();
+    const long_name = $('newRouteLong').value.trim();
     const description = $('newRouteDesc').value.trim();
-    if (!route_code || !route_name) {
-      setStatus($('createRouteStatus'), 'Route code and name are both required.', 'err');
+    if (!route_code || !short_name || !long_name) {
+      setStatus($('createRouteStatus'), 'Route code, short name, and long name are all required.', 'err');
       return;
     }
     setStatus($('createRouteStatus'), 'Creating…', 'info');
@@ -424,11 +427,12 @@
       await api('/v1/routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ route_code, route_name, description: description || null })
+        body: JSON.stringify({ route_code, short_name, long_name, description: description || undefined })
       });
       setStatus($('createRouteStatus'), `Route "${route_code}" created.`, 'ok');
       $('newRouteCode').value = '';
-      $('newRouteName').value = '';
+      $('newRouteShort').value = '';
+      $('newRouteLong').value = '';
       $('newRouteDesc').value = '';
       await loadRoutes();
     } catch (e) {
@@ -509,11 +513,19 @@
         $('uploadBtn').disabled = false;
       } else if (data.status === 'error') {
         let detail = 'see worker logs';
-        if (data.error_log) {
-          try {
-            const parsed = JSON.parse(data.error_log);
-            detail = Array.isArray(parsed) ? parsed.join('; ') : (parsed.message || data.error_log);
-          } catch { detail = data.error_log; }
+        const raw = data.error_log;
+        if (raw) {
+          let parsed = raw;
+          if (typeof raw === 'string') {
+            try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+          }
+          if (Array.isArray(parsed)) {
+            detail = parsed.join('; ');
+          } else if (parsed && typeof parsed === 'object') {
+            detail = parsed.message || JSON.stringify(parsed);
+          } else {
+            detail = String(parsed);
+          }
         }
         setStatus($('uploadStatus'), 'Import failed: ' + detail, 'err');
         $('uploadBtn').disabled = false;
