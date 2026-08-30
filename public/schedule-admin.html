@@ -508,7 +508,14 @@
         setStatus($('uploadStatus'), 'Import complete.', 'ok');
         $('uploadBtn').disabled = false;
       } else if (data.status === 'error') {
-        setStatus($('uploadStatus'), 'Import failed: ' + (data.error_message || 'see logs'), 'err');
+        let detail = 'see worker logs';
+        if (data.error_log) {
+          try {
+            const parsed = JSON.parse(data.error_log);
+            detail = Array.isArray(parsed) ? parsed.join('; ') : (parsed.message || data.error_log);
+          } catch { detail = data.error_log; }
+        }
+        setStatus($('uploadStatus'), 'Import failed: ' + detail, 'err');
         $('uploadBtn').disabled = false;
       } else {
         setStatus($('uploadStatus'), `Status: ${data.status}…`, 'info');
