@@ -305,7 +305,7 @@
         currently no working sign-in for invited accounts — the invite email / password-setup step
         hasn't been built yet on the backend. Until that exists, the reliable way to onboard someone
         is: they create their own account below (name, email, password), then you promote their role
-        in the roster table beneath it. Schedule uploads require the <strong>operator</strong> role.
+        in the roster table beneath it. Schedule uploads require the <strong>route_manager</strong> role.
       </div>
 
       <div class="card">
@@ -580,7 +580,7 @@
   });
 
   // ── Team: roster + role changes ───────────────────────────────────────
-  const ROLES = ['org_admin', 'operator', 'dispatcher', 'driver', 'passenger'];
+  const ROLES = ['org_admin', 'route_manager', 'dispatcher', 'driver', 'passenger'];
   async function loadRoster() {
     if (!state.orgId) return;
     try {
