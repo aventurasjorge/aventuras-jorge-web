@@ -233,6 +233,27 @@
     <input type="password" id="password" autocomplete="current-password">
     <button id="loginBtn">Sign in</button>
     <div class="status-line" id="loginStatus"></div>
+    <div class="muted-small" style="margin-top:1rem;">
+      New here? <a href="#" id="showRegisterLink">Create an account</a> instead.
+    </div>
+  </div>
+
+  <!-- Registration (pre-login) -->
+  <div class="card hidden" id="registerCard">
+    <h2><span class="step">01</span> Create your account</h2>
+    <label for="regName">Full name</label>
+    <input type="text" id="regName">
+    <label for="regEmail">Email</label>
+    <input type="email" id="regEmail">
+    <label for="regPassword">Password (min 8 characters)</label>
+    <input type="password" id="regPassword">
+    <button id="registerBtn">Create account</button>
+    <button class="secondary" id="showLoginLink">Back to sign in</button>
+    <div class="status-line" id="registerStatus"></div>
+    <div class="muted-small" style="margin-top:0.75rem;">
+      New accounts start with the "passenger" role. An org_admin will need to
+      assign your real role (operator, dispatcher, etc.) afterward in the Team tab.
+    </div>
   </div>
 
   <div id="app" class="hidden">
@@ -275,18 +296,6 @@
       </div>
 
       <div class="card">
-        <h2>Create your account</h2>
-        <label for="regName">Full name</label>
-        <input type="text" id="regName">
-        <label for="regEmail">Email</label>
-        <input type="email" id="regEmail">
-        <label for="regPassword">Password (min 8 characters)</label>
-        <input type="password" id="regPassword">
-        <button id="registerBtn">Create account &amp; sign in</button>
-        <div class="status-line" id="registerStatus"></div>
-      </div>
-
-      <div class="card">
         <h2>Roster</h2>
         <div class="muted-small">Change a role, then click Save on that row. Requires org_admin or platform_admin.</div>
         <table id="rosterTable">
@@ -326,6 +335,17 @@
     }
     return body;
   }
+
+  // ── Login / Register toggle ───────────────────────────────────────────
+  $('showRegisterLink').addEventListener('click', (e) => {
+    e.preventDefault();
+    $('loginCard').classList.add('hidden');
+    $('registerCard').classList.remove('hidden');
+  });
+  $('showLoginLink').addEventListener('click', () => {
+    $('registerCard').classList.add('hidden');
+    $('loginCard').classList.remove('hidden');
+  });
 
   // ── Login ──────────────────────────────────────────────────────────────
   $('loginBtn').addEventListener('click', async () => {
@@ -492,7 +512,12 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ full_name, email, password })
       });
-      setStatus($('registerStatus'), 'Account created. An admin can now assign your role in the roster below.', 'ok');
+      setStatus($('registerStatus'), 'Account created — you can sign in now.', 'ok');
+      $('email').value = email;
+      setTimeout(() => {
+        $('registerCard').classList.add('hidden');
+        $('loginCard').classList.remove('hidden');
+      }, 1200);
     } catch (e) {
       setStatus($('registerStatus'), 'Could not create account: ' + e.message, 'err');
     }
