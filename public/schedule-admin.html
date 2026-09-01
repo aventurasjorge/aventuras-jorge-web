@@ -283,6 +283,11 @@
         <h2><span class="step">02</span> Choose a route</h2>
         <select id="routeSelect"></select>
         <div class="muted-small" id="routeMeta"></div>
+        <label for="directionSelect">Direction</label>
+        <select id="directionSelect">
+          <option value="0">Direction 0 (e.g. outbound)</option>
+          <option value="1">Direction 1 (e.g. inbound / return)</option>
+        </select>
       </div>
 
       <div class="card">
@@ -486,7 +491,7 @@
     setStatus($('uploadStatus'), 'Uploading…', 'info');
     $('uploadBtn').disabled = true;
     try {
-      const res = await fetch(`${apiBase()}/v1/imports/schedule?route_id=${routeId}`, {
+      const res = await fetch(`${apiBase()}/v1/imports/schedule?route_id=${routeId}&direction=${$('directionSelect').value}`, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + state.token },
         body: form
