@@ -297,7 +297,7 @@
         <div class="status-line" id="duplicatesStatus"></div>
         <div id="duplicatesList"></div>
       </div>
-      
+
       <div class="card">
         <h2><span class="step">03</span> Upload spreadsheet</h2>
         <div class="dropzone" id="dropzone">
@@ -394,6 +394,14 @@
     state.token = data.access_token;
     state.role = data.role;
     state.orgId = data.org_id;
+
+    // Restrict route-management UI (create route + duplicate merge) to roles
+    // that can actually use it — backend still enforces this too, this just
+    // avoids showing controls that will only 403.
+    const canManageRoutes = ['org_admin', 'route_manager', 'platform_admin'].includes(data.role);
+    $('createRouteBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+    $('findDuplicatesBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+
     $('loginCard').classList.add('hidden');
     $('app').classList.remove('hidden');
     const info = $('sessionInfo');
@@ -407,10 +415,6 @@
     }, 14 * 60 * 1000);
   }
 
-const canManageRoutes = ['org_admin', 'route_manager', 'platform_admin'].includes(data.role);
-    $('createRouteBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
-    $('findDuplicatesBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
-  
   $('logoutBtn').addEventListener('click', () => {
     state = { token: null, role: null, orgId: null, routes: [], selectedFile: null, userId: null };
     $('app').classList.add('hidden');
@@ -477,7 +481,7 @@ const canManageRoutes = ['org_admin', 'route_manager', 'platform_admin'].include
     $('routeMeta').innerHTML = r ? `<span class="route-chip">${r.route_code}</span>${r.long_name || ''}` : '';
   }
 
-    // ── Duplicate routes ──────────────────────────────────────────────────
+  // ── Duplicate routes ──────────────────────────────────────────────────
   $('findDuplicatesBtn')?.addEventListener('click', loadDuplicates);
 
   async function loadDuplicates() {
