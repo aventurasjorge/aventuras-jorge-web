@@ -291,6 +291,14 @@
       </div>
 
       <div class="card">
+        <h2><span class="step">·</span> Duplicate routes</h2>
+        <div class="muted-small">Finds routes that look like directional mirrors of each other (same operator, origin/destination swapped) and lets you merge them into one bidirectional route.</div>
+        <button id="findDuplicatesBtn" class="secondary">Scan for duplicates</button>
+        <div class="status-line" id="duplicatesStatus"></div>
+        <div id="duplicatesList"></div>
+      </div>
+      
+      <div class="card">
         <h2><span class="step">03</span> Upload spreadsheet</h2>
         <div class="dropzone" id="dropzone">
           Drag a .xlsx or .csv file here, or click to browse
@@ -399,6 +407,10 @@
     }, 14 * 60 * 1000);
   }
 
+const canManageRoutes = ['org_admin', 'route_manager', 'platform_admin'].includes(data.role);
+    $('createRouteBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+    $('findDuplicatesBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+  
   $('logoutBtn').addEventListener('click', () => {
     state = { token: null, role: null, orgId: null, routes: [], selectedFile: null, userId: null };
     $('app').classList.add('hidden');
@@ -463,6 +475,68 @@
   function updateRouteMeta() {
     const r = state.routes.find(r => r.id === $('routeSelect').value);
     $('routeMeta').innerHTML = r ? `<span class="route-chip">${r.route_code}</span>${r.long_name || ''}` : '';
+  }
+
+    // ── Duplicate routes ──────────────────────────────────────────────────
+  $('findDuplicatesBtn')?.addEventListener('click', loadDuplicates);
+
+  async function loadDuplicates() {
+    setStatus($('duplicatesStatus'), 'Scanning…', 'info');
+    try {
+      const pairs = await api('/v1/routes/duplicates');
+      if (!pairs.length) {
+        setStatus($('duplicatesStatus'), 'No duplicate pairs found.', 'ok');
+        $('duplicatesList').innerHTML = '';
+        return;
+      }
+      setStatus($('duplicatesStatus'), `Found ${pairs.length} possible pair${pairs.length === 1 ? '' : 's'}.`, 'ok');
+      $('duplicatesList').innerHTML = pairs.map((p, i) => `
+        <div class="card" style="margin-top:0.75rem;">
+          <div><span class="route-chip">${p.routeA.route_code}</span>${p.routeA.long_name || ''}</div>
+          <div class="muted-small">↕ mirrors</div>
+          <div><span class="route-chip">${p.routeB.route_code}</span>${p.routeB.long_name || ''}</div>
+          <label>Keep this route</label>
+          <select id="keepSelect-${i}">
+            <option value="${p.routeA.id}">${p.routeA.route_code}</option>
+            <option value="${p.routeB.id}">${p.routeB.route_code}</option>
+          </select>
+          <label>Removed route's data becomes direction</label>
+          <select id="dirSelect-${i}">
+            <option value="0">Direction 0</option>
+            <option value="1">Direction 1</option>
+          </select>
+          <button class="small merge-btn" data-idx="${i}" data-a="${p.routeA.id}" data-b="${p.routeB.id}">Merge this pair</button>
+          <div class="status-line" id="mergeStatus-${i}"></div>
+        </div>
+      `).join('');
+
+      document.querySelectorAll('.merge-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const i = btn.dataset.idx;
+          const keep_id = $(`keepSelect-${i}`).value;
+          const a = btn.dataset.a, b = btn.dataset.b;
+          const remove_id = keep_id === a ? b : a;
+          const remove_side_direction = parseInt($(`dirSelect-${i}`).value, 10);
+          const statusEl = $(`mergeStatus-${i}`);
+          setStatus(statusEl, 'Merging…', 'info');
+          btn.disabled = true;
+          try {
+            const result = await api('/v1/routes/merge', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ keep_id, remove_id, remove_side_direction })
+            });
+            setStatus(statusEl, `Merged. Rows reassigned: ${JSON.stringify(result.rowsReassigned)}`, 'ok');
+            await loadRoutes();
+          } catch (e) {
+            setStatus(statusEl, 'Merge failed: ' + e.message, 'err');
+            btn.disabled = false;
+          }
+        });
+      });
+    } catch (e) {
+      setStatus($('duplicatesStatus'), 'Could not scan for duplicates: ' + e.message, 'err');
+    }
   }
 
   // ── Upload ─────────────────────────────────────────────────────────────
