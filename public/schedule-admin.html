@@ -525,13 +525,16 @@
           setStatus(statusEl, 'Merging…', 'info');
           btn.disabled = true;
           try {
-            const result = await api('/v1/routes/merge', {
+            await api('/v1/routes/merge', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ keep_id, remove_id, remove_side_direction })
             });
-            setStatus(statusEl, `Merged. Rows reassigned: ${JSON.stringify(result.rowsReassigned)}`, 'ok');
+            // Refresh both the route picker and the duplicates list itself,
+            // so a merged pair's card disappears immediately instead of
+            // lingering with a stale "Merged" message until manually rescanned.
             await loadRoutes();
+            await loadDuplicates();
           } catch (e) {
             setStatus(statusEl, 'Merge failed: ' + e.message, 'err');
             btn.disabled = false;
