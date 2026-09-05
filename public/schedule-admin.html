@@ -104,7 +104,7 @@
     margin-top: 0.9rem;
   }
   label:first-of-type { margin-top: 0; }
-  input[type=text], input[type=email], input[type=password], input[type=url], select {
+  input[type=text], input[type=email], input[type=password], input[type=url], input[type=number], select {
     width: 100%;
     background: var(--surface-raised);
     border: 1px solid var(--border);
@@ -117,6 +117,11 @@
   input:focus, select:focus {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
   }
   button {
     background: var(--accent);
@@ -280,6 +285,49 @@
       </div>
 
       <div class="card">
+        <h2>Create a stop</h2>
+        <label for="newStopCode">Stop code</label>
+        <input type="text" id="newStopCode" placeholder="e.g. NYC-PABT">
+        <label for="newStopName">Stop name</label>
+        <input type="text" id="newStopName" placeholder="e.g. NYC - Port Authority Bus Terminal">
+        <label for="newStopDesc">Description (optional)</label>
+        <input type="text" id="newStopDesc" placeholder="e.g. Gate 411, upper level">
+        <label for="newStopAddress">Address</label>
+        <input type="text" id="newStopAddress" placeholder="e.g. 625 8th Ave, New York, NY 10018">
+        <div class="field-row">
+          <div>
+            <label for="newStopCity">City (optional)</label>
+            <input type="text" id="newStopCity">
+          </div>
+          <div>
+            <label for="newStopState">State (optional, 2-letter)</label>
+            <input type="text" id="newStopState" maxlength="2" placeholder="e.g. NY">
+          </div>
+        </div>
+        <div class="muted-small" style="margin-top:0.9rem;">
+          Leave latitude/longitude blank to auto-geocode from the address — verify the pin on a map afterward.
+        </div>
+        <div class="field-row">
+          <div>
+            <label for="newStopLat">Latitude (optional)</label>
+            <input type="number" id="newStopLat" step="any" placeholder="e.g. 40.7568">
+          </div>
+          <div>
+            <label for="newStopLng">Longitude (optional)</label>
+            <input type="number" id="newStopLng" step="any" placeholder="e.g. -73.9906">
+          </div>
+        </div>
+        <label for="newStopWheelchair">Wheelchair boarding</label>
+        <select id="newStopWheelchair">
+          <option value="0">No information</option>
+          <option value="1">Accessible</option>
+          <option value="2">Not accessible</option>
+        </select>
+        <button id="createStopBtn">Create stop</button>
+        <div class="status-line" id="createStopStatus"></div>
+      </div>
+
+      <div class="card">
         <h2><span class="step">02</span> Choose a route</h2>
         <select id="routeSelect"></select>
         <div class="muted-small" id="routeMeta"></div>
@@ -395,11 +443,12 @@
     state.role = data.role;
     state.orgId = data.org_id;
 
-    // Restrict route-management UI (create route + duplicate merge) to roles
-    // that can actually use it — backend still enforces this too, this just
-    // avoids showing controls that will only 403.
+    // Restrict route/stop-management UI to roles that can actually use it —
+    // backend still enforces this too, this just avoids showing controls
+    // that will only 403.
     const canManageRoutes = ['org_admin', 'route_manager', 'platform_admin'].includes(data.role);
     $('createRouteBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+    $('createStopBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
     $('findDuplicatesBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
 
     $('loginCard').classList.add('hidden');
@@ -458,6 +507,69 @@
       await loadRoutes();
     } catch (e) {
       setStatus($('createRouteStatus'), 'Could not create route: ' + e.message, 'err');
+    }
+  });
+
+  // ── Create stop ────────────────────────────────────────────────────────
+  // Matches StopBody in apps/api/src/routes/stops.ts exactly: stop_code,
+  // stop_name, stop_desc, address (required), city, state, latitude,
+  // longitude, wheelchair_boarding. Leaving lat/lng blank triggers the
+  // backend's auto-geocode-from-address path.
+  $('createStopBtn').addEventListener('click', async () => {
+    const stop_code = $('newStopCode').value.trim();
+    const stop_name = $('newStopName').value.trim();
+    const stop_desc = $('newStopDesc').value.trim();
+    const address = $('newStopAddress').value.trim();
+    const city = $('newStopCity').value.trim();
+    const state_ = $('newStopState').value.trim();
+    const latRaw = $('newStopLat').value.trim();
+    const lngRaw = $('newStopLng').value.trim();
+    const wheelchair_boarding = parseInt($('newStopWheelchair').value, 10);
+
+    if (!stop_code || !stop_name || !address) {
+      setStatus($('createStopStatus'), 'Stop code, stop name, and address are all required.', 'err');
+      return;
+    }
+    if (address.length < 5) {
+      setStatus($('createStopStatus'), 'Address must be at least 5 characters.', 'err');
+      return;
+    }
+    if (state_ && state_.length !== 2) {
+      setStatus($('createStopStatus'), 'State must be a 2-letter abbreviation (e.g. NY), or leave it blank.', 'err');
+      return;
+    }
+
+    const payload = {
+      stop_code,
+      stop_name,
+      stop_desc: stop_desc || undefined,
+      address,
+      city: city || undefined,
+      state: state_ || undefined,
+      wheelchair_boarding,
+    };
+    if (latRaw !== '') payload.latitude = parseFloat(latRaw);
+    if (lngRaw !== '') payload.longitude = parseFloat(lngRaw);
+
+    setStatus($('createStopStatus'), 'Creating…', 'info');
+    try {
+      const result = await api('/v1/stops', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setStatus($('createStopStatus'), result.message + (result.geocoded ? ` (lat/lng: ${result.latitude.toFixed(5)}, ${result.longitude.toFixed(5)})` : ''), 'ok');
+      $('newStopCode').value = '';
+      $('newStopName').value = '';
+      $('newStopDesc').value = '';
+      $('newStopAddress').value = '';
+      $('newStopCity').value = '';
+      $('newStopState').value = '';
+      $('newStopLat').value = '';
+      $('newStopLng').value = '';
+      $('newStopWheelchair').value = '0';
+    } catch (e) {
+      setStatus($('createStopStatus'), 'Could not create stop: ' + e.message, 'err');
     }
   });
 
