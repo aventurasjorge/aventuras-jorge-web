@@ -104,6 +104,17 @@
     margin-top: 0.9rem;
   }
   label:first-of-type { margin-top: 0; }
+  label.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text);
+    font-size: 0.85rem;
+  }
+  label.checkbox-label input[type=checkbox] {
+    width: auto;
+    margin: 0;
+  }
   input[type=text], input[type=email], input[type=password], input[type=url], input[type=number], select {
     width: 100%;
     background: var(--surface-raised);
@@ -178,8 +189,9 @@
   .status-line.info { background: rgba(242,169,0,0.1); color: var(--accent); }
   .status-line.ok { background: rgba(62,207,142,0.1); color: var(--success); }
   .status-line.err { background: rgba(239,68,68,0.1); color: var(--error); }
+  .table-scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.83rem; }
-  th, td { text-align: left; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--border); }
+  th, td { text-align: left; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { color: var(--muted); font-weight: 500; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
   td.role { font-family: var(--mono); }
   .role-select { padding: 0.3rem 0.4rem; font-size: 0.78rem; width: auto; }
@@ -328,6 +340,26 @@
       </div>
 
       <div class="card">
+        <h2>Stops</h2>
+        <label for="stopSearch">Search (name, address, or code)</label>
+        <input type="text" id="stopSearch" placeholder="e.g. Port Authority">
+        <label class="checkbox-label" style="margin-top:0.9rem;">
+          <input type="checkbox" id="stopFilterRoute">
+          Only show stops on the currently selected route
+        </label>
+        <button id="loadStopsBtn" class="secondary">Refresh</button>
+        <div class="status-line" id="stopsStatus"></div>
+        <div class="table-scroll">
+          <table id="stopsTable">
+            <thead>
+              <tr><th>Code</th><th>Name</th><th>Address</th><th>City, State</th><th>Lat, Lng</th></tr>
+            </thead>
+            <tbody id="stopsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
         <h2><span class="step">02</span> Choose a route</h2>
         <select id="routeSelect"></select>
         <div class="muted-small" id="routeMeta"></div>
@@ -443,9 +475,10 @@
     state.role = data.role;
     state.orgId = data.org_id;
 
-    // Restrict route/stop-management UI to roles that can actually use it —
+    // Restrict route/stop-creation UI to roles that can actually use it —
     // backend still enforces this too, this just avoids showing controls
-    // that will only 403.
+    // that will only 403. The Stops list itself has no role restriction on
+    // the backend, so it stays visible to everyone.
     const canManageRoutes = ['org_admin', 'route_manager', 'platform_admin'].includes(data.role);
     $('createRouteBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
     $('createStopBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
@@ -458,6 +491,7 @@
     info.innerHTML = `<span class="dot"></span><span>${data.role}</span>`;
     loadRoutes();
     loadRoster();
+    loadStops();
     // Token expires in 15 minutes — warn before it does.
     setTimeout(() => {
       setStatus($('uploadStatus'), 'Your session token has likely expired — sign in again before uploading.', 'info');
@@ -568,10 +602,48 @@
       $('newStopLat').value = '';
       $('newStopLng').value = '';
       $('newStopWheelchair').value = '0';
+      await loadStops();
     } catch (e) {
       setStatus($('createStopStatus'), 'Could not create stop: ' + e.message, 'err');
     }
   });
+
+  // ── Stops list ─────────────────────────────────────────────────────────
+  // Backed by GET /v1/stops (search, city, state, route_id, active_only).
+  // No role restriction on the backend, so this stays visible to everyone.
+  async function loadStops() {
+    setStatus($('stopsStatus'), 'Loading…', 'info');
+    try {
+      const params = new URLSearchParams();
+      const search = $('stopSearch').value.trim();
+      if (search) params.set('search', search);
+      if ($('stopFilterRoute').checked && $('routeSelect').value) {
+        params.set('route_id', $('routeSelect').value);
+      }
+      const qs = params.toString();
+      const stops = await api('/v1/stops' + (qs ? '?' + qs : ''));
+      if (!stops.length) {
+        setStatus($('stopsStatus'), 'No stops found.', 'ok');
+        $('stopsBody').innerHTML = '';
+        return;
+      }
+      setStatus($('stopsStatus'), `${stops.length} stop${stops.length === 1 ? '' : 's'}.`, 'ok');
+      $('stopsBody').innerHTML = stops.map(s => `
+        <tr>
+          <td>${s.stop_code}</td>
+          <td>${s.stop_name}</td>
+          <td>${s.address || ''}</td>
+          <td>${[s.city, s.state].filter(Boolean).join(', ')}</td>
+          <td>${s.latitude != null ? Number(s.latitude).toFixed(5) : ''}, ${s.longitude != null ? Number(s.longitude).toFixed(5) : ''}</td>
+        </tr>
+      `).join('');
+    } catch (e) {
+      setStatus($('stopsStatus'), 'Could not load stops: ' + e.message, 'err');
+    }
+  }
+  $('loadStopsBtn').addEventListener('click', loadStops);
+  $('stopFilterRoute').addEventListener('change', loadStops);
+  $('stopSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadStops(); });
 
   // ── Routes ─────────────────────────────────────────────────────────────
   async function loadRoutes() {
@@ -588,6 +660,9 @@
     }
   }
   $('routeSelect')?.addEventListener('change', updateRouteMeta);
+  $('routeSelect')?.addEventListener('change', () => {
+    if ($('stopFilterRoute').checked) loadStops();
+  });
   function updateRouteMeta() {
     const r = state.routes.find(r => r.id === $('routeSelect').value);
     $('routeMeta').innerHTML = r ? `<span class="route-chip">${r.route_code}</span>${r.long_name || ''}` : '';
