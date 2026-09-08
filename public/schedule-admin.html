@@ -751,9 +751,52 @@
     $('uploadBtn').disabled = false;
   }
 
+  // Loose filename ↔ route match check. Not a hard validator — just a
+  // last-look safety net before an upload silently overwrites a route's
+  // segments. Compares normalized tokens from the filename against tokens
+  // from the route's code/short_name/long_name; if none overlap, we ask
+  // the uploader to confirm rather than blocking outright (route codes and
+  // filenames don't follow one strict shared convention, so false
+  // positives are expected and shouldn't be a hard stop).
+  function normalizeTokens(str) {
+    return (str || '')
+      .toLowerCase()
+      .replace(/\.[^.]+$/, '')       // strip file extension
+      .split(/[^a-z0-9]+/)
+      .filter(t => t.length > 2);    // drop tiny/noise tokens
+  }
+
+  function filenameLooksLikeRoute(filename, route) {
+    const fileTokens = new Set(normalizeTokens(filename));
+    const routeTokens = new Set([
+      ...normalizeTokens(route.route_code),
+      ...normalizeTokens(route.short_name),
+      ...normalizeTokens(route.long_name),
+    ]);
+    for (const t of fileTokens) {
+      if (routeTokens.has(t)) return true;
+    }
+    return false;
+  }
+
   $('uploadBtn').addEventListener('click', async () => {
     if (!state.selectedFile) return;
     const routeId = $('routeSelect').value;
+    const route = state.routes.find(r => r.id === routeId);
+
+    if (route && !filenameLooksLikeRoute(state.selectedFile.name, route)) {
+      const proceed = confirm(
+        `"${state.selectedFile.name}" doesn't look like it matches the selected route ` +
+        `(${route.route_code} — ${route.long_name || route.short_name}).\n\n` +
+        `Uploading to the wrong route will overwrite that route's existing stop sequence ` +
+        `and schedule for this direction.\n\nUpload anyway?`
+      );
+      if (!proceed) {
+        setStatus($('uploadStatus'), 'Upload cancelled — route/file mismatch.', 'err');
+        return;
+      }
+    }
+
     const form = new FormData();
     form.append('file', state.selectedFile);
     setStatus($('uploadStatus'), 'Uploading…', 'info');
