@@ -153,6 +153,10 @@
     border: 1px solid var(--border);
   }
   button.small { padding: 0.35rem 0.6rem; font-size: 0.75rem; margin-top: 0; }
+  button.danger {
+    background: #e5484d;
+    color: #fff;
+  }
   .route-chip {
     display: inline-flex;
     align-items: center;
@@ -625,8 +629,8 @@
         <td>${[s.city, s.state].filter(Boolean).join(', ')}</td>
         <td>${latLng}</td>
         <td>
-          <button class="secondary stop-edit-btn" data-id="${s.id}">Edit</button>
-          <button class="secondary stop-geocode-btn" data-id="${s.id}">Geocode</button>
+          <button class="secondary small stop-edit-btn" data-id="${s.id}">Edit</button>
+          <button class="secondary small stop-geocode-btn" data-id="${s.id}">Geocode</button>
         </td>
       </tr>`;
   }
@@ -646,8 +650,9 @@
           <input type="number" step="any" class="edit-longitude" value="${s.longitude ?? ''}" placeholder="lng" style="width:6rem">
         </td>
         <td>
-          <button class="stop-save-btn" data-id="${s.id}">Save</button>
-          <button class="secondary stop-cancel-btn" data-id="${s.id}">Cancel</button>
+          <button class="small stop-save-btn" data-id="${s.id}">Save</button>
+          <button class="secondary small stop-cancel-btn" data-id="${s.id}">Cancel</button>
+          <button class="danger small stop-delete-btn" data-id="${s.id}">Delete</button>
         </td>
       </tr>`;
   }
@@ -764,6 +769,47 @@
         btn.disabled = false;
         btn.textContent = 'Save';
       }
+      return;
+    }
+
+    if (btn.classList.contains('stop-delete-btn')) {
+      const confirmMsg = `Delete "${stop.stop_name}" (${stop.stop_code})?\n\n` +
+        `This deactivates the stop rather than permanently erasing it — it stays in the ` +
+        `database (bookings/history are preserved) but won't show up in active views or search.`;
+      if (!confirm(confirmMsg)) return;
+
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+      try {
+        await api(`/v1/stops/${id}`, { method: 'DELETE' });
+        setStatus($('stopsStatus'), `"${stop.stop_name}" deactivated.`, 'ok');
+        await loadStops();
+      } catch (err) {
+        // Backend returns 409 + a message naming the still-active routes
+        // when a stop is in use. Offer to force it through rather than
+        // just reporting the failure, since that's almost always what
+        // someone actually wants next.
+        if (/still used by/i.test(err.message)) {
+          const forceMsg = `${err.message}\n\nDeactivate anyway? (This will remove it from ` +
+            `those route(s)' active stop sequence too — only do this if you're sure.)`;
+          if (confirm(forceMsg)) {
+            try {
+              await api(`/v1/stops/${id}?force=true`, { method: 'DELETE' });
+              setStatus($('stopsStatus'), `"${stop.stop_name}" deactivated.`, 'ok');
+              await loadStops();
+              return;
+            } catch (err2) {
+              setStatus($('stopsStatus'), 'Could not deactivate stop: ' + err2.message, 'err');
+            }
+          } else {
+            setStatus($('stopsStatus'), 'Delete cancelled — stop still in active use.', 'err');
+          }
+        } else {
+          setStatus($('stopsStatus'), 'Could not delete stop: ' + err.message, 'err');
+        }
+      }
+      btn.disabled = false;
+      btn.textContent = 'Delete';
       return;
     }
   });
