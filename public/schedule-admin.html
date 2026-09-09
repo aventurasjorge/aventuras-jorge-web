@@ -352,7 +352,7 @@
         <div class="table-scroll">
           <table id="stopsTable">
             <thead>
-              <tr><th>Code</th><th>Name</th><th>Address</th><th>City, State</th><th>Lat, Lng</th></tr>
+              <tr><th>Code</th><th>Name</th><th>Address</th><th>City, State</th><th>Lat, Lng</th><th>Actions</th></tr>
             </thead>
             <tbody id="stopsBody"></tbody>
           </table>
@@ -611,6 +611,47 @@
   // ── Stops list ─────────────────────────────────────────────────────────
   // Backed by GET /v1/stops (search, city, state, route_id, active_only).
   // No role restriction on the backend, so this stays visible to everyone.
+  // Row Edit/Geocode actions require route_manager (same as create), matching
+  // the backend's PATCH /v1/stops/:id and POST /v1/stops/:id/geocode.
+  let stopsCache = [];
+
+  function stopViewRow(s) {
+    const latLng = `${s.latitude != null ? Number(s.latitude).toFixed(5) : '—'}, ${s.longitude != null ? Number(s.longitude).toFixed(5) : '—'}`;
+    return `
+      <tr data-stop-id="${s.id}">
+        <td>${s.stop_code}</td>
+        <td>${s.stop_name}</td>
+        <td>${s.address || ''}</td>
+        <td>${[s.city, s.state].filter(Boolean).join(', ')}</td>
+        <td>${latLng}</td>
+        <td>
+          <button class="secondary stop-edit-btn" data-id="${s.id}">Edit</button>
+          <button class="secondary stop-geocode-btn" data-id="${s.id}">Geocode</button>
+        </td>
+      </tr>`;
+  }
+
+  function stopEditRow(s) {
+    return `
+      <tr data-stop-id="${s.id}" data-editing="true">
+        <td><input type="text" class="edit-stop_code" value="${s.stop_code}" style="width:8rem"></td>
+        <td><input type="text" class="edit-stop_name" value="${s.stop_name}" style="width:12rem"></td>
+        <td><input type="text" class="edit-address" value="${s.address || ''}" style="width:14rem"></td>
+        <td>
+          <input type="text" class="edit-city" value="${s.city || ''}" placeholder="City" style="width:5rem">
+          <input type="text" class="edit-state" value="${s.state || ''}" placeholder="ST" maxlength="2" style="width:3rem">
+        </td>
+        <td>
+          <input type="number" step="any" class="edit-latitude" value="${s.latitude ?? ''}" placeholder="lat" style="width:6rem">
+          <input type="number" step="any" class="edit-longitude" value="${s.longitude ?? ''}" placeholder="lng" style="width:6rem">
+        </td>
+        <td>
+          <button class="stop-save-btn" data-id="${s.id}">Save</button>
+          <button class="secondary stop-cancel-btn" data-id="${s.id}">Cancel</button>
+        </td>
+      </tr>`;
+  }
+
   async function loadStops() {
     setStatus($('stopsStatus'), 'Loading…', 'info');
     try {
@@ -622,27 +663,110 @@
       }
       const qs = params.toString();
       const stops = await api('/v1/stops' + (qs ? '?' + qs : ''));
+      stopsCache = stops;
       if (!stops.length) {
         setStatus($('stopsStatus'), 'No stops found.', 'ok');
         $('stopsBody').innerHTML = '';
         return;
       }
       setStatus($('stopsStatus'), `${stops.length} stop${stops.length === 1 ? '' : 's'}.`, 'ok');
-      $('stopsBody').innerHTML = stops.map(s => `
-        <tr>
-          <td>${s.stop_code}</td>
-          <td>${s.stop_name}</td>
-          <td>${s.address || ''}</td>
-          <td>${[s.city, s.state].filter(Boolean).join(', ')}</td>
-          <td>${s.latitude != null ? Number(s.latitude).toFixed(5) : ''}, ${s.longitude != null ? Number(s.longitude).toFixed(5) : ''}</td>
-        </tr>
-      `).join('');
+      $('stopsBody').innerHTML = stops.map(stopViewRow).join('');
     } catch (e) {
       setStatus($('stopsStatus'), 'Could not load stops: ' + e.message, 'err');
     }
   }
   $('loadStopsBtn').addEventListener('click', loadStops);
   $('stopFilterRoute').addEventListener('change', loadStops);
+
+  // Delegate row actions (buttons are re-rendered on every load, so a single
+  // listener on the tbody is simpler than re-binding per row).
+  $('stopsBody').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const stop = stopsCache.find(s => s.id === id);
+    const row = $('stopsBody').querySelector(`tr[data-stop-id="${id}"]`);
+    if (!stop || !row) return;
+
+    if (btn.classList.contains('stop-edit-btn')) {
+      row.outerHTML = stopEditRow(stop);
+      return;
+    }
+
+    if (btn.classList.contains('stop-cancel-btn')) {
+      row.outerHTML = stopViewRow(stop);
+      return;
+    }
+
+    if (btn.classList.contains('stop-geocode-btn')) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Geocoding…';
+      try {
+        const result = await api(`/v1/stops/${id}/geocode`, { method: 'POST' });
+        setStatus($('stopsStatus'), `${stop.stop_name}: ${result.message}`, 'ok');
+        await loadStops();
+      } catch (err) {
+        setStatus($('stopsStatus'), `Could not geocode "${stop.stop_name}": ` + err.message, 'err');
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+      return;
+    }
+
+    if (btn.classList.contains('stop-save-btn')) {
+      const editRow = row;
+      const get = (cls) => editRow.querySelector('.' + cls).value.trim();
+      const stop_code = get('edit-stop_code');
+      const stop_name = get('edit-stop_name');
+      const address   = get('edit-address');
+      const city      = get('edit-city');
+      const state_    = get('edit-state');
+      const latRaw    = get('edit-latitude');
+      const lngRaw    = get('edit-longitude');
+
+      if (!stop_code || !stop_name || !address) {
+        setStatus($('stopsStatus'), 'Stop code, stop name, and address are all required.', 'err');
+        return;
+      }
+      if (state_ && state_.length !== 2) {
+        setStatus($('stopsStatus'), 'State must be a 2-letter abbreviation (e.g. NY), or left blank.', 'err');
+        return;
+      }
+
+      const payload = { stop_code, stop_name, address };
+      payload.city  = city || null;
+      payload.state = state_ || null;
+      // Only send coordinates if both are present and changed — leaving one
+      // blank while the other has a value would otherwise send a partial,
+      // invalid coordinate pair.
+      if (latRaw !== '' && lngRaw !== '') {
+        payload.latitude  = parseFloat(latRaw);
+        payload.longitude = parseFloat(lngRaw);
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      try {
+        const result = await api(`/v1/stops/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        setStatus(
+          $('stopsStatus'),
+          result.message + (result.geocode_note ? ` ${result.geocode_note}` : ''),
+          'ok'
+        );
+        await loadStops();
+      } catch (err) {
+        setStatus($('stopsStatus'), 'Could not save stop: ' + err.message, 'err');
+        btn.disabled = false;
+        btn.textContent = 'Save';
+      }
+      return;
+    }
+  });
   $('stopSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadStops(); });
 
   // ── Routes ─────────────────────────────────────────────────────────────
