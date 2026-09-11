@@ -393,6 +393,14 @@
         <button class="secondary" id="templateBtn">Download blank template</button>
         <div class="status-line" id="uploadStatus"></div>
       </div>
+
+      <div class="card hidden" id="reviewCard">
+        <h2><span class="step">·</span> Needs review: stop matches</h2>
+        <div class="muted-small">This upload has stop(s) that don't exactly match an existing stop code. Confirm whether each one is really a new stop or the same stop under a different code before the import can finish.</div>
+        <div class="status-line" id="reviewStatus"></div>
+        <div id="reviewList"></div>
+        <button id="confirmReviewBtn" class="small">Confirm &amp; finish import</button>
+      </div>
     </div>
 
     <!-- Team tab -->
@@ -987,6 +995,8 @@
     }
   });
 
+  let activeReviewImportId = null;
+
   async function pollImport(id, attempt = 0) {
     if (attempt > 30) {
       setStatus($('uploadStatus'), 'Still processing — check back shortly.', 'info');
@@ -997,6 +1007,7 @@
       if (data.status === 'complete') {
         setStatus($('uploadStatus'), 'Import complete.', 'ok');
         $('uploadBtn').disabled = false;
+        $('reviewCard').classList.add('hidden');
       } else if (data.status === 'error') {
         let detail = 'see worker logs';
         const raw = data.error_log;
@@ -1015,6 +1026,13 @@
         }
         setStatus($('uploadStatus'), 'Import failed: ' + detail, 'err');
         $('uploadBtn').disabled = false;
+      } else if (data.status === 'needs_review') {
+        setStatus($('uploadStatus'), 'Parsed — some stops need your review before this can finish.', 'info');
+        $('uploadBtn').disabled = false;
+        await loadReviewCandidates(id);
+      } else if (data.status === 'finalizing') {
+        setStatus($('uploadStatus'), 'Finishing import…', 'info');
+        setTimeout(() => pollImport(id, attempt + 1), 2000);
       } else {
         setStatus($('uploadStatus'), `Status: ${data.status}…`, 'info');
         setTimeout(() => pollImport(id, attempt + 1), 2000);
@@ -1024,6 +1042,72 @@
       $('uploadBtn').disabled = false;
     }
   }
+
+  // ── Stop-match review ──────────────────────────────────────────────────
+  async function loadReviewCandidates(importId) {
+    activeReviewImportId = importId;
+    $('reviewCard').classList.remove('hidden');
+    setStatus($('reviewStatus'), 'Loading stop matches…', 'info');
+    try {
+      const data = await api(`/v1/imports/${importId}/candidates`);
+      const rows = (data.candidates || []).filter(c => !c.resolution);
+      if (!rows.length) {
+        setStatus($('reviewStatus'), 'Nothing left to review — waiting on finalize.', 'ok');
+        $('reviewList').innerHTML = '';
+        return;
+      }
+      setStatus($('reviewStatus'), `${rows.length} stop(s) need a decision.`, 'info');
+      $('reviewList').innerHTML = rows.map((c) => {
+        const candidates = c.candidates || [];
+        const options = candidates
+          .map(m => `<option value="use_existing:${m.stop_id}">Use existing: ${m.stop_name} (${Math.round((m.score || 0) * 100)}% match)</option>`)
+          .join('');
+        return `
+          <div class="card" style="margin-top:0.75rem;">
+            <div><strong>${c.stop_code}</strong> — ${c.stop_name}</div>
+            <div class="muted-small">${c.address || ''}</div>
+            <label>Resolution</label>
+            <select data-candidate="${c.id}">
+              <option value="create_new">Create as a new stop</option>
+              ${options}
+            </select>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {
+      setStatus($('reviewStatus'), 'Could not load stop matches: ' + e.message, 'err');
+    }
+  }
+
+  $('confirmReviewBtn').addEventListener('click', async () => {
+    if (!activeReviewImportId) return;
+    const selects = $('reviewList').querySelectorAll('select[data-candidate]');
+    if (!selects.length) return;
+    const resolutions = Array.from(selects).map(sel => {
+      const [action, stopId] = sel.value.split(':');
+      return {
+        candidate_id: sel.dataset.candidate,
+        resolution: action,
+        ...(stopId ? { stop_id: stopId } : {}),
+      };
+    });
+    setStatus($('reviewStatus'), 'Submitting…', 'info');
+    $('confirmReviewBtn').disabled = true;
+    try {
+      await api(`/v1/imports/${activeReviewImportId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolutions }),
+      });
+      setStatus($('reviewStatus'), 'Submitted — finishing import…', 'ok');
+      $('reviewList').innerHTML = '';
+      pollImport(activeReviewImportId);
+    } catch (e) {
+      setStatus($('reviewStatus'), 'Could not submit: ' + e.message, 'err');
+    } finally {
+      $('confirmReviewBtn').disabled = false;
+    }
+  });
 
   $('templateBtn').addEventListener('click', async () => {
     try {
