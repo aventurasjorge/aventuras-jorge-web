@@ -540,17 +540,28 @@
     }
     setStatus($('createRouteStatus'), 'Creating…', 'info');
     try {
-      await api('/v1/routes', {
+      const created = await api('/v1/routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ route_code, short_name, long_name, description: description || undefined })
       });
-      setStatus($('createRouteStatus'), `Route "${route_code}" created.`, 'ok');
+      setStatus($('createRouteStatus'), `Route "${route_code}" created and selected above — double-check before uploading.`, 'ok');
       $('newRouteCode').value = '';
       $('newRouteShort').value = '';
       $('newRouteLong').value = '';
       $('newRouteDesc').value = '';
       await loadRoutes();
+      // loadRoutes() rebuilds <select id="routeSelect"> from scratch, which
+      // resets the browser's selection to index 0 (whatever route happens
+      // to sort first) rather than keeping the one just created. That's
+      // exactly how a run of schedule uploads silently landed on an
+      // unrelated, older route: each "Create route" was immediately
+      // followed by "Upload", with nobody noticing the dropdown had quietly
+      // reset out from under them. Force it back to the route just created.
+      if (created?.id) {
+        $('routeSelect').value = created.id;
+        updateRouteMeta();
+      }
     } catch (e) {
       setStatus($('createRouteStatus'), 'Could not create route: ' + e.message, 'err');
     }
@@ -898,7 +909,15 @@
             // Refresh both the route picker and the duplicates list itself,
             // so a merged pair's card disappears immediately instead of
             // lingering with a stale "Merged" message until manually rescanned.
+            // loadRoutes() rebuilds the <select> from scratch, which silently
+            // resets its selection to index 0 unless we restore it explicitly
+            // (see the same fix in the "Create route" handler above) — if the
+            // previously-selected route was the one just removed, fall back
+            // to whichever route the merge kept.
+            const previouslySelected = $('routeSelect').value;
             await loadRoutes();
+            $('routeSelect').value = (previouslySelected === remove_id) ? keep_id : previouslySelected;
+            updateRouteMeta();
             await loadDuplicates();
           } catch (e) {
             setStatus(statusEl, 'Merge failed: ' + e.message, 'err');
