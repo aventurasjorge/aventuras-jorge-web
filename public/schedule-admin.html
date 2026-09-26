@@ -280,6 +280,7 @@
   <div id="app" class="hidden">
     <div class="tabs">
       <button class="active" data-tab="upload">Upload schedule</button>
+      <button data-tab="zones">Flex Zones</button>
       <button data-tab="team">Team</button>
       <button class="secondary" id="logoutBtn" style="margin-left:auto;">Sign out</button>
     </div>
@@ -403,6 +404,55 @@
       </div>
     </div>
 
+    <!-- Flex Zones tab -->
+    <div id="tab-zones" class="hidden">
+      <div class="notice">
+        <strong>Note:</strong> a flex/door-to-door zone is a boundary polygon, not a single
+        address — it doesn't belong in the Stops list and doesn't need coordinates. Paste in
+        GeoJSON (a <code>Polygon</code> or <code>MultiPolygon</code>, in plain lat/lng —
+        EPSG:4326) from an official boundary source or from the hand-drawing tool, and leave it
+        blank if you don't have one yet — you can add it later with Edit.
+      </div>
+
+      <div class="card">
+        <h2>Create a flex zone</h2>
+        <label for="newZoneCode">Zone code</label>
+        <input type="text" id="newZoneCode" placeholder="e.g. READING (DOOR)">
+        <label for="newZoneName">Zone name</label>
+        <input type="text" id="newZoneName" placeholder="e.g. Reading, PA (Door-to-Door)">
+        <label for="newZoneDesc">Description (optional)</label>
+        <input type="text" id="newZoneDesc" placeholder="e.g. Addresses within the city limits of Reading, PA">
+        <div class="field-row">
+          <div>
+            <label for="newZoneFare">Fare surcharge</label>
+            <input type="number" id="newZoneFare" step="any" value="0">
+          </div>
+          <div>
+            <label for="newZoneAdvance">Advance booking (minutes)</label>
+            <input type="number" id="newZoneAdvance" step="1" value="0">
+          </div>
+        </div>
+        <label for="newZoneBoundary">Boundary GeoJSON (optional — Polygon or MultiPolygon, lat/lng)</label>
+        <textarea id="newZoneBoundary" rows="4" placeholder='{"type":"Polygon","coordinates":[[[...]]]}' style="width:100%; background:var(--surface-raised); border:1px solid var(--border); color:var(--text); padding:0.6rem 0.7rem; border-radius:6px; font-size:0.8rem; font-family:var(--mono);"></textarea>
+        <button id="createZoneBtn">Create zone</button>
+        <div class="status-line" id="createZoneStatus"></div>
+      </div>
+
+      <div class="card">
+        <h2>Flex zones</h2>
+        <button id="loadZonesBtn" class="secondary">Refresh</button>
+        <div class="status-line" id="zonesStatus"></div>
+        <div class="table-scroll">
+          <table id="zonesTable">
+            <thead>
+              <tr><th>Code</th><th>Name</th><th>Fare</th><th>Advance (min)</th><th>Boundary</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="zonesBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Team tab -->
     <div id="tab-team" class="hidden">
       <div class="notice">
@@ -495,6 +545,7 @@
     $('createRouteBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
     $('createStopBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
     $('findDuplicatesBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+    $('createZoneBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
 
     $('loginCard').classList.add('hidden');
     $('app').classList.remove('hidden');
@@ -504,6 +555,7 @@
     loadRoutes();
     loadRoster();
     loadStops();
+    loadZones();
     // Token expires in 15 minutes — warn before it does.
     setTimeout(() => {
       setStatus($('uploadStatus'), 'Your session token has likely expired — sign in again before uploading.', 'info');
@@ -524,6 +576,7 @@
       document.querySelectorAll('.tabs button[data-tab]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       $('tab-upload').classList.toggle('hidden', btn.dataset.tab !== 'upload');
+      $('tab-zones').classList.toggle('hidden', btn.dataset.tab !== 'zones');
       $('tab-team').classList.toggle('hidden', btn.dataset.tab !== 'team');
     });
   });
@@ -1125,6 +1178,182 @@
       setStatus($('reviewStatus'), 'Could not submit: ' + e.message, 'err');
     } finally {
       $('confirmReviewBtn').disabled = false;
+    }
+  });
+
+  // ── Create flex zone ───────────────────────────────────────────────────
+  // Matches FlexZoneBody in apps/api/src/routes/stops.ts: zone_code,
+  // zone_name, description, fare_surcharge, advance_booking_minutes,
+  // boundary_geojson. Unlike a stop, there is no address/lat/lng at all --
+  // the boundary_geojson polygon is the only location data a zone has.
+  $('createZoneBtn').addEventListener('click', async () => {
+    const zone_code = $('newZoneCode').value.trim();
+    const zone_name = $('newZoneName').value.trim();
+    const description = $('newZoneDesc').value.trim();
+    const fare_surcharge = parseFloat($('newZoneFare').value || '0');
+    const advance_booking_minutes = parseInt($('newZoneAdvance').value || '0', 10);
+    const boundaryRaw = $('newZoneBoundary').value.trim();
+
+    if (!zone_code || !zone_name) {
+      setStatus($('createZoneStatus'), 'Zone code and zone name are both required.', 'err');
+      return;
+    }
+
+    let boundary_geojson;
+    if (boundaryRaw) {
+      try {
+        boundary_geojson = JSON.parse(boundaryRaw);
+      } catch (e) {
+        setStatus($('createZoneStatus'), 'Boundary GeoJSON is not valid JSON: ' + e.message, 'err');
+        return;
+      }
+      if (!['Polygon', 'MultiPolygon'].includes(boundary_geojson.type)) {
+        setStatus($('createZoneStatus'), 'Boundary GeoJSON must be a Polygon or MultiPolygon.', 'err');
+        return;
+      }
+    }
+
+    const payload = {
+      zone_code, zone_name,
+      description: description || undefined,
+      fare_surcharge, advance_booking_minutes,
+      boundary_geojson: boundary_geojson || undefined,
+    };
+
+    setStatus($('createZoneStatus'), 'Creating…', 'info');
+    try {
+      const result = await api('/v1/flex-zones', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setStatus($('createZoneStatus'), result.message + (result.boundary_note ? ' — ' + result.boundary_note : ''), 'ok');
+      $('newZoneCode').value = '';
+      $('newZoneName').value = '';
+      $('newZoneDesc').value = '';
+      $('newZoneFare').value = '0';
+      $('newZoneAdvance').value = '0';
+      $('newZoneBoundary').value = '';
+      await loadZones();
+    } catch (e) {
+      setStatus($('createZoneStatus'), 'Could not create zone: ' + e.message, 'err');
+    }
+  });
+
+  // ── Flex zones list ────────────────────────────────────────────────────
+  // Backed by GET /v1/flex-zones (public read). Row Edit/Delete require
+  // route_manager, matching PATCH/DELETE /v1/flex-zones/:id on the backend.
+  let zonesCache = [];
+
+  function zoneViewRow(z) {
+    const hasBoundary = !!z.boundary_geojson;
+    return `
+      <tr data-zone-id="${z.id}">
+        <td>${z.zone_code}</td>
+        <td>${z.zone_name}</td>
+        <td>${Number(z.fare_surcharge ?? 0).toFixed(2)}</td>
+        <td>${z.advance_booking_minutes ?? 0}</td>
+        <td>${hasBoundary ? 'Set' : '— none —'}</td>
+        <td>
+          <button class="secondary small zone-edit-btn" data-id="${z.id}">Edit</button>
+          <button class="danger small zone-delete-btn" data-id="${z.id}">Delete</button>
+        </td>
+      </tr>`;
+  }
+
+  function zoneEditRow(z) {
+    const boundaryStr = z.boundary_geojson ? JSON.stringify(z.boundary_geojson) : '';
+    return `
+      <tr data-zone-id="${z.id}" data-editing="true">
+        <td><input type="text" class="edit-zone_code" value="${z.zone_code}" style="width:9rem"></td>
+        <td><input type="text" class="edit-zone_name" value="${z.zone_name}" style="width:12rem"></td>
+        <td><input type="number" step="any" class="edit-fare_surcharge" value="${z.fare_surcharge ?? 0}" style="width:5rem"></td>
+        <td><input type="number" step="1" class="edit-advance_booking_minutes" value="${z.advance_booking_minutes ?? 0}" style="width:5rem"></td>
+        <td colspan="2">
+          <textarea class="edit-boundary_geojson" rows="2" placeholder='Polygon/MultiPolygon GeoJSON, or leave blank'
+            style="width:100%; background:var(--surface-raised); border:1px solid var(--border); color:var(--text); padding:0.4rem; border-radius:6px; font-size:0.75rem; font-family:var(--mono);">${boundaryStr}</textarea>
+          <button class="small zone-save-btn" data-id="${z.id}">Save</button>
+          <button class="secondary small zone-cancel-btn" data-id="${z.id}">Cancel</button>
+        </td>
+      </tr>`;
+  }
+
+  async function loadZones() {
+    setStatus($('zonesStatus'), 'Loading…', 'info');
+    try {
+      const zones = await api('/v1/flex-zones');
+      zonesCache = zones;
+      if (!zones.length) {
+        setStatus($('zonesStatus'), 'No flex zones found.', 'ok');
+        $('zonesBody').innerHTML = '';
+        return;
+      }
+      setStatus($('zonesStatus'), `${zones.length} zone${zones.length === 1 ? '' : 's'}.`, 'ok');
+      $('zonesBody').innerHTML = zones.map(zoneViewRow).join('');
+    } catch (e) {
+      setStatus($('zonesStatus'), 'Could not load flex zones: ' + e.message, 'err');
+    }
+  }
+  $('loadZonesBtn').addEventListener('click', loadZones);
+
+  $('zonesBody').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const zone = zonesCache.find(z => z.id === id);
+    const row = $('zonesBody').querySelector(`tr[data-zone-id="${id}"]`);
+    if (!zone || !row) return;
+
+    if (btn.classList.contains('zone-edit-btn')) {
+      row.outerHTML = zoneEditRow(zone);
+      return;
+    }
+
+    if (btn.classList.contains('zone-cancel-btn')) {
+      row.outerHTML = zoneViewRow(zone);
+      return;
+    }
+
+    if (btn.classList.contains('zone-delete-btn')) {
+      if (!confirm(`Delete flex zone "${zone.zone_name}"? This deactivates it — it will no longer be usable on new bookings.`)) return;
+      try {
+        await api(`/v1/flex-zones/${id}`, { method: 'DELETE' });
+        await loadZones();
+      } catch (err) {
+        setStatus($('zonesStatus'), 'Could not delete zone: ' + err.message, 'err');
+      }
+      return;
+    }
+
+    if (btn.classList.contains('zone-save-btn')) {
+      const get = (cls) => row.querySelector('.' + cls).value.trim();
+      const boundaryRaw = get('edit-boundary_geojson');
+      let boundary_geojson;
+      if (boundaryRaw) {
+        try {
+          boundary_geojson = JSON.parse(boundaryRaw);
+        } catch (err) {
+          setStatus($('zonesStatus'), 'Boundary GeoJSON is not valid JSON: ' + err.message, 'err');
+          return;
+        }
+      }
+      const payload = {
+        zone_code: get('edit-zone_code'),
+        zone_name: get('edit-zone_name'),
+        fare_surcharge: parseFloat(get('edit-fare_surcharge') || '0'),
+        advance_booking_minutes: parseInt(get('edit-advance_booking_minutes') || '0', 10),
+        boundary_geojson: boundaryRaw ? boundary_geojson : null,
+      };
+      try {
+        await api(`/v1/flex-zones/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        await loadZones();
+      } catch (err) {
+        setStatus($('zonesStatus'), 'Could not save zone: ' + err.message, 'err');
+      }
     }
   });
 
