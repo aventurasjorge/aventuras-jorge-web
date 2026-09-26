@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FlexRoute — Dispatch Console</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="./zones-map.js"></script>
 <style>
   :root {
     --bg: #12151b;
@@ -410,8 +413,9 @@
         <strong>Note:</strong> a flex/door-to-door zone is a boundary polygon, not a single
         address — it doesn't belong in the Stops list and doesn't need coordinates. Paste in
         GeoJSON (a <code>Polygon</code> or <code>MultiPolygon</code>, in plain lat/lng —
-        EPSG:4326) from an official boundary source or from the hand-drawing tool, and leave it
-        blank if you don't have one yet — you can add it later with Edit.
+        EPSG:4326) from an official boundary source or from the
+        <a href="/zone_boundary_drawer.html" target="_blank" rel="noopener">hand-drawing tool</a>,
+        and leave it blank if you don't have one yet — you can add it later with Edit.
       </div>
 
       <div class="card">
@@ -436,6 +440,16 @@
         <textarea id="newZoneBoundary" rows="4" placeholder='{"type":"Polygon","coordinates":[[[...]]]}' style="width:100%; background:var(--surface-raised); border:1px solid var(--border); color:var(--text); padding:0.6rem 0.7rem; border-radius:6px; font-size:0.8rem; font-family:var(--mono);"></textarea>
         <button id="createZoneBtn">Create zone</button>
         <div class="status-line" id="createZoneStatus"></div>
+      </div>
+
+      <div class="card">
+        <h2>Zone map</h2>
+        <div class="muted-small">
+          Same live data as the table below — a public, read-only version of this map is at
+          <a href="/zones-map.html" target="_blank" rel="noopener">/zones-map.html</a>.
+        </div>
+        <div class="status-line show" id="zonesMapStatus" style="margin-top:0.6rem;">Loading…</div>
+        <div id="zonesMapEl" style="height:340px; border-radius:8px; margin-top:0.5rem;"></div>
       </div>
 
       <div class="card">
@@ -578,6 +592,10 @@
       $('tab-upload').classList.toggle('hidden', btn.dataset.tab !== 'upload');
       $('tab-zones').classList.toggle('hidden', btn.dataset.tab !== 'zones');
       $('tab-team').classList.toggle('hidden', btn.dataset.tab !== 'team');
+      // Leaflet can't measure a hidden (display:none) container, so the
+      // map is only (re)rendered once this tab actually becomes visible --
+      // not eagerly on login, when it would still be hidden behind Upload.
+      if (btn.dataset.tab === 'zones') refreshZonesMap();
     });
   });
 
@@ -1278,8 +1296,33 @@
       </tr>`;
   }
 
+  // Shared with the public zones-map.html via zones-map.js -- same
+  // renderZonesMap() call, just with an auth header so it's scoped to this
+  // org instead of taking org_slug. Re-run every time loadZones() runs so
+  // the map never shows anything stale relative to the table below it.
+  async function refreshZonesMap() {
+    try {
+      await renderZonesMap({
+        containerId: 'zonesMapEl',
+        apiBase: apiBase(),
+        headers: state.token ? { Authorization: 'Bearer ' + state.token } : {},
+        onZonesLoaded: (legend) => {
+          setStatus($('zonesMapStatus'),
+            `${legend.length} zone${legend.length === 1 ? '' : 's'} — ` +
+            `${legend.filter(l => !l.hasBoundary).length} missing a boundary.`, 'ok');
+        },
+      });
+    } catch (e) {
+      setStatus($('zonesMapStatus'), 'Could not load zone map: ' + e.message, 'err');
+    }
+  }
+
   async function loadZones() {
     setStatus($('zonesStatus'), 'Loading…', 'info');
+    // Keep the map in sync with every table reload -- but only if the tab
+    // is actually visible (see the tab-switch handler for why: Leaflet
+    // can't initialize inside a display:none container).
+    if (!$('tab-zones').classList.contains('hidden')) refreshZonesMap();
     try {
       const zones = await api('/v1/flex-zones');
       zonesCache = zones;
