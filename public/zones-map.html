@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlexRoute — Service Zones</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="./zones-map.js"></script>
+<style>
+  :root {
+    --bg: #12151b; --surface: #1a1f28; --surface-raised: #212733;
+    --border: #2a3140; --text: #e8ebf0; --muted: #8b93a3; --accent: #f2a900;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); min-height:100vh; }
+  header { border-bottom:1px solid var(--border); padding:1.25rem 1.5rem; }
+  header h1 { font-size:1.05rem; margin:0; }
+  header p { margin:0.35rem 0 0; color:var(--muted); font-size:0.85rem; }
+  main { max-width:1100px; margin:0 auto; padding:1.5rem; display:grid; grid-template-columns:2fr 1fr; gap:1.25rem; }
+  @media (max-width: 800px) { main { grid-template-columns:1fr; } }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:1rem; }
+  #map { height:70vh; min-height:420px; border-radius:8px; }
+  .config { display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap; }
+  .config input { flex:1; min-width:200px; background:var(--surface-raised); border:1px solid var(--border); color:var(--text); padding:0.5rem 0.6rem; border-radius:6px; font-size:0.85rem; }
+  .config button { background:var(--accent); color:#14181f; border:none; font-weight:600; padding:0.5rem 0.9rem; border-radius:6px; cursor:pointer; font-size:0.85rem; }
+  .status { font-family:ui-monospace,monospace; font-size:0.8rem; color:var(--muted); margin-bottom:0.75rem; }
+  .status.err { color:#ef4444; }
+  ul#legend { list-style:none; margin:0; padding:0; max-height:70vh; overflow-y:auto; }
+  ul#legend li { display:flex; align-items:flex-start; gap:0.6rem; padding:0.6rem 0.3rem; border-bottom:1px solid var(--border); cursor:pointer; }
+  ul#legend li:hover { background:var(--surface-raised); }
+  .swatch { width:14px; height:14px; border-radius:3px; margin-top:0.15rem; flex-shrink:0; }
+  .legend-name { font-size:0.85rem; font-weight:600; }
+  .legend-code { font-size:0.72rem; color:var(--muted); font-family:ui-monospace,monospace; }
+  .legend-flag { font-size:0.72rem; color:#f2a900; margin-top:0.15rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FlexRoute — Service Zones</h1>
+  <p>All active door-to-door / flex zone boundaries. Click a zone below or on the map for details.</p>
+</header>
+
+<main>
+  <div class="card">
+    <div class="config">
+      <input type="url" id="apiBase" value="https://earnest-miracle-production-5a3a.up.railway.app" placeholder="API base URL">
+      <input type="text" id="orgSlug" placeholder="Org slug (optional)">
+      <button id="reloadBtn">Load</button>
+    </div>
+    <div class="status" id="status"></div>
+    <div id="map"></div>
+  </div>
+  <div class="card">
+    <h2 style="font-size:0.9rem;margin:0 0 0.75rem;">Zones</h2>
+    <ul id="legend"></ul>
+  </div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  async function load() {
+    const statusEl = $('status');
+    statusEl.textContent = 'Loading zones…';
+    statusEl.classList.remove('err');
+    try {
+      const legend = await renderZonesMap({
+        containerId: 'map',
+        apiBase: $('apiBase').value.trim(),
+        orgSlug: $('orgSlug').value.trim() || undefined,
+      });
+      statusEl.textContent = `${legend.length} zone${legend.length === 1 ? '' : 's'} loaded` +
+        (legend.length ? ` — ${legend.filter(l => !l.hasBoundary).length} missing a boundary.` : '.');
+      $('legend').innerHTML = legend.map(({ zone, color, hasBoundary }) => `
+        <li data-code="${zone.zone_code}">
+          <span class="swatch" style="background:${color}"></span>
+          <div>
+            <div class="legend-name">${zone.zone_name}</div>
+            <div class="legend-code">${zone.zone_code}</div>
+            ${hasBoundary ? '' : '<div class="legend-flag">No boundary set yet</div>'}
+          </div>
+        </li>
+      `).join('');
+      $('legend').querySelectorAll('li[data-code]').forEach(li => {
+        li.addEventListener('click', () => focusZoneOnMap('map', li.dataset.code));
+      });
+    } catch (e) {
+      statusEl.textContent = 'Could not load zones: ' + e.message;
+      statusEl.classList.add('err');
+    }
+  }
+
+  $('reloadBtn').addEventListener('click', load);
+  load();
+</script>
+</body>
+</html>
