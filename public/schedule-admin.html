@@ -284,6 +284,7 @@
     <div class="tabs">
       <button class="active" data-tab="upload">Upload schedule</button>
       <button data-tab="zones">Flex Zones</button>
+      <button data-tab="fares">Fares</button>
       <button data-tab="team">Team</button>
       <button class="secondary" id="logoutBtn" style="margin-left:auto;">Sign out</button>
     </div>
@@ -467,6 +468,75 @@
       </div>
     </div>
 
+    <!-- Fares tab -->
+    <div id="tab-fares" class="hidden">
+      <div class="notice">
+        <strong>Note:</strong> a specific stop/zone fare below always wins over a fare-zone
+        grouping when both exist. Fare-zone grouping only applies when the exact pair below has
+        no row of its own — see the fare zone's members as the fallback price for anything not
+        priced directly.
+      </div>
+
+      <div class="card">
+        <h2>Fare zone membership</h2>
+        <div class="muted-small">Which service (door-to-door) zones belong to a fare-pricing zone
+          like FRACK-SHENDO-MAHANOY. A service zone can belong to more than one fare zone.</div>
+        <div class="field-row" style="margin-top:0.6rem;">
+          <div>
+            <label for="fzmFareZone">Fare zone</label>
+            <select id="fzmFareZone"></select>
+          </div>
+          <div>
+            <label for="fzmServiceZone">Service zone</label>
+            <select id="fzmServiceZone"></select>
+          </div>
+        </div>
+        <button id="addZoneMemberBtn">Add membership</button>
+        <div class="status-line" id="zoneMemberStatus"></div>
+        <div class="table-scroll">
+          <table id="zoneMembersTable">
+            <thead><tr><th>Fare zone</th><th>Service zone</th><th>Actions</th></tr></thead>
+            <tbody id="zoneMembersBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Create a fare (stop or zone on each side)</h2>
+        <div class="field-row">
+          <div>
+            <label for="mfOriginType">Origin type</label>
+            <select id="mfOriginType"><option value="stop">Stop</option><option value="zone">Zone (service or fare)</option></select>
+          </div>
+          <div>
+            <label for="mfOriginId">Origin</label>
+            <select id="mfOriginId"></select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div>
+            <label for="mfDestType">Destination type</label>
+            <select id="mfDestType"><option value="stop">Stop</option><option value="zone">Zone (service or fare)</option></select>
+          </div>
+          <div>
+            <label for="mfDestId">Destination</label>
+            <select id="mfDestId"></select>
+          </div>
+        </div>
+        <label for="mfAmount">Fare amount</label>
+        <input type="number" id="mfAmount" step="0.01" min="0" value="0" style="max-width:10rem;">
+        <br>
+        <button id="createMixedFareBtn">Create fare</button>
+        <div class="status-line" id="mixedFareStatus"></div>
+        <div class="table-scroll">
+          <table id="mixedFaresTable">
+            <thead><tr><th>Origin</th><th>Destination</th><th>Amount</th><th>Actions</th></tr></thead>
+            <tbody id="mixedFaresBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Team tab -->
     <div id="tab-team" class="hidden">
       <div class="notice">
@@ -560,6 +630,8 @@
     $('createStopBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
     $('findDuplicatesBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
     $('createZoneBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+    $('addZoneMemberBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
+    $('createMixedFareBtn').closest('.card').classList.toggle('hidden', !canManageRoutes);
 
     $('loginCard').classList.add('hidden');
     $('app').classList.remove('hidden');
@@ -591,11 +663,13 @@
       btn.classList.add('active');
       $('tab-upload').classList.toggle('hidden', btn.dataset.tab !== 'upload');
       $('tab-zones').classList.toggle('hidden', btn.dataset.tab !== 'zones');
+      $('tab-fares').classList.toggle('hidden', btn.dataset.tab !== 'fares');
       $('tab-team').classList.toggle('hidden', btn.dataset.tab !== 'team');
       // Leaflet can't measure a hidden (display:none) container, so the
       // map is only (re)rendered once this tab actually becomes visible --
       // not eagerly on login, when it would still be hidden behind Upload.
       if (btn.dataset.tab === 'zones') refreshZonesMap();
+      if (btn.dataset.tab === 'fares') loadFaresTabData();
     });
   });
 
@@ -1397,6 +1471,153 @@
       } catch (err) {
         setStatus($('zonesStatus'), 'Could not save zone: ' + err.message, 'err');
       }
+    }
+  });
+
+  // ── Fares tab ──────────────────────────────────────────────────────────
+  // Reuses stopsCache (from the Stops tab's loadStops()) and zonesCache
+  // (from the Flex Zones tab's loadZones()) for every dropdown here, rather
+  // than fetching either list a second time.
+  let zoneMembersCache = [];
+  let mixedFaresCache = [];
+
+  function populateZoneMemberDropdowns() {
+    const fareZones = zonesCache.filter(z => z.zone_type === 'fare');
+    const serviceZones = zonesCache.filter(z => z.zone_type !== 'fare');
+    $('fzmFareZone').innerHTML = fareZones.map(z => `<option value="${z.id}">${z.zone_name} (${z.zone_code})</option>`).join('');
+    $('fzmServiceZone').innerHTML = serviceZones.map(z => `<option value="${z.id}">${z.zone_name} (${z.zone_code})</option>`).join('');
+  }
+
+  function populateMixedFareDropdown(select, type) {
+    if (type === 'stop') {
+      select.innerHTML = stopsCache.map(s => `<option value="${s.id}">${s.stop_name} (${s.stop_code})</option>`).join('');
+    } else {
+      select.innerHTML = zonesCache.map(z => `<option value="${z.id}">${z.zone_name} (${z.zone_code}, ${z.zone_type})</option>`).join('');
+    }
+  }
+
+  $('mfOriginType').addEventListener('change', () => populateMixedFareDropdown($('mfOriginId'), $('mfOriginType').value));
+  $('mfDestType').addEventListener('change', () => populateMixedFareDropdown($('mfDestId'), $('mfDestType').value));
+
+  // Loads everything the Fares tab needs -- called once when the tab is
+  // first opened (stopsCache/zonesCache are already populated by then,
+  // loadStops() runs at login and loadZones() runs on the Flex Zones tab,
+  // but call both here too in case this tab is opened first).
+  async function loadFaresTabData() {
+    if (!stopsCache.length) await loadStops();
+    if (!zonesCache.length) await loadZones();
+    populateZoneMemberDropdowns();
+    populateMixedFareDropdown($('mfOriginId'), $('mfOriginType').value);
+    populateMixedFareDropdown($('mfDestId'), $('mfDestType').value);
+    await Promise.all([loadZoneMembers(), loadMixedFares()]);
+  }
+
+  async function loadZoneMembers() {
+    setStatus($('zoneMemberStatus'), 'Loading…', 'info');
+    try {
+      const rows = await api('/v1/fares/zone-members');
+      zoneMembersCache = rows;
+      $('zoneMembersBody').innerHTML = rows.map(m => `
+        <tr>
+          <td>${m.fare_zone_name} (${m.fare_zone_code})</td>
+          <td>${m.service_zone_name} (${m.service_zone_code})</td>
+          <td><button class="danger small zm-delete-btn" data-id="${m.id}">Remove</button></td>
+        </tr>`).join('');
+      setStatus($('zoneMemberStatus'), `${rows.length} membership${rows.length === 1 ? '' : 's'}.`, 'ok');
+    } catch (e) {
+      setStatus($('zoneMemberStatus'), 'Could not load memberships: ' + e.message, 'err');
+    }
+  }
+
+  $('addZoneMemberBtn').addEventListener('click', async () => {
+    const fare_zone_id = $('fzmFareZone').value;
+    const service_zone_id = $('fzmServiceZone').value;
+    if (!fare_zone_id || !service_zone_id) {
+      setStatus($('zoneMemberStatus'), 'Pick both a fare zone and a service zone.', 'err');
+      return;
+    }
+    setStatus($('zoneMemberStatus'), 'Adding…', 'info');
+    try {
+      const result = await api('/v1/fares/zone-members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fare_zone_id, service_zone_id }),
+      });
+      setStatus($('zoneMemberStatus'), result.message, 'ok');
+      await loadZoneMembers();
+    } catch (e) {
+      setStatus($('zoneMemberStatus'), 'Could not add membership: ' + e.message, 'err');
+    }
+  });
+
+  $('zoneMembersBody').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.zm-delete-btn');
+    if (!btn) return;
+    try {
+      await api(`/v1/fares/zone-members/${btn.dataset.id}`, { method: 'DELETE' });
+      await loadZoneMembers();
+    } catch (err) {
+      setStatus($('zoneMemberStatus'), 'Could not remove membership: ' + err.message, 'err');
+    }
+  });
+
+  async function loadMixedFares() {
+    setStatus($('mixedFareStatus'), 'Loading…', 'info');
+    try {
+      const rows = await api('/v1/fares/mixed-fares');
+      mixedFaresCache = rows;
+      $('mixedFaresBody').innerHTML = rows.map(m => `
+        <tr>
+          <td>${m.origin_stop_name || m.origin_zone_name || '—'}</td>
+          <td>${m.dest_stop_name || m.dest_zone_name || '—'}</td>
+          <td>${Number(m.amount).toFixed(2)}</td>
+          <td><button class="danger small mf-delete-btn" data-id="${m.id}">Delete</button></td>
+        </tr>`).join('');
+      setStatus($('mixedFareStatus'), `${rows.length} fare${rows.length === 1 ? '' : 's'}.`, 'ok');
+    } catch (e) {
+      setStatus($('mixedFareStatus'), 'Could not load fares: ' + e.message, 'err');
+    }
+  }
+
+  $('createMixedFareBtn').addEventListener('click', async () => {
+    const originType = $('mfOriginType').value;
+    const destType = $('mfDestType').value;
+    const originId = $('mfOriginId').value;
+    const destId = $('mfDestId').value;
+    const amount = parseFloat($('mfAmount').value || '0');
+    if (!originId || !destId) {
+      setStatus($('mixedFareStatus'), 'Pick both an origin and a destination.', 'err');
+      return;
+    }
+    const payload = {
+      origin_stop_id: originType === 'stop' ? originId : null,
+      origin_zone_id: originType === 'zone' ? originId : null,
+      dest_stop_id:   destType   === 'stop' ? destId   : null,
+      dest_zone_id:   destType   === 'zone' ? destId   : null,
+      amount,
+    };
+    setStatus($('mixedFareStatus'), 'Creating…', 'info');
+    try {
+      const result = await api('/v1/fares/mixed-fares', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      setStatus($('mixedFareStatus'), result.message, 'ok');
+      await loadMixedFares();
+    } catch (e) {
+      setStatus($('mixedFareStatus'), 'Could not create fare: ' + e.message, 'err');
+    }
+  });
+
+  $('mixedFaresBody').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.mf-delete-btn');
+    if (!btn) return;
+    try {
+      await api(`/v1/fares/mixed-fares/${btn.dataset.id}`, { method: 'DELETE' });
+      await loadMixedFares();
+    } catch (err) {
+      setStatus($('mixedFareStatus'), 'Could not delete fare: ' + err.message, 'err');
     }
   });
 
