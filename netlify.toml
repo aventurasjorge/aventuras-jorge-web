@@ -2,6 +2,18 @@
   command = "npm run build"
   publish = "dist"
 
+# schedule.aventurasjorge.com is a custom domain alias for this same
+# Netlify site, meant to land directly on the admin tool instead of
+# the main marketing site. This rule only matches requests to that
+# host, so aventurasjorge.com and any other domain on this site are
+# unaffected. Must come before the catch-all SPA redirect below,
+# since Netlify applies redirects in file order.
+[[redirects]]
+  from = "https://schedule.aventurasjorge.com/"
+  to = "/schedule-admin.html"
+  status = 200
+  force = true
+
 # SPA fallback: React Router handles routing client-side, so every
 # path needs to resolve to index.html rather than a 404 from Netlify.
 [[redirects]]
