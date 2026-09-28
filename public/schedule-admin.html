@@ -523,14 +523,21 @@
             <select id="mfDestId"></select>
           </div>
         </div>
-        <label for="mfAmount">Fare amount</label>
-        <input type="number" id="mfAmount" step="0.01" min="0" value="0" style="max-width:10rem;">
-        <br>
+        <div class="field-row">
+          <div>
+            <label for="mfAmount">Fare amount</label>
+            <input type="number" id="mfAmount" step="0.01" min="0" value="0">
+          </div>
+          <div>
+            <label for="mfRoute">Route (optional — same pair can price differently per route)</label>
+            <select id="mfRoute"><option value="">Any route</option></select>
+          </div>
+        </div>
         <button id="createMixedFareBtn">Create fare</button>
         <div class="status-line" id="mixedFareStatus"></div>
         <div class="table-scroll">
           <table id="mixedFaresTable">
-            <thead><tr><th>Origin</th><th>Destination</th><th>Amount</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Origin</th><th>Destination</th><th>Amount</th><th>Route</th><th>Actions</th></tr></thead>
             <tbody id="mixedFaresBody"></tbody>
           </table>
         </div>
@@ -1337,6 +1344,57 @@
   // route_manager, matching PATCH/DELETE /v1/flex-zones/:id on the backend.
   let zonesCache = [];
 
+  // ── Edit a zone's boundary directly on a map, instead of copy/paste ────
+  // Opens zone_boundary_drawer.html (same origin, same repo's public/) in a
+  // popup, prefilled with this zone's current boundary via postMessage.
+  // Every point in that shape -- hand-drawn, imported, or pulled from an
+  // official municipal boundary -- is fully draggable/deletable/insertable
+  // there now, not just appendable. On Save, the result comes back the same
+  // way and is PATCHed straight to this zone.
+  let pendingBoundaryEditZone = null;
+  let pendingBoundaryEditWindow = null;
+
+  function openZoneBoundaryEditor(zone) {
+    pendingBoundaryEditZone = zone;
+    pendingBoundaryEditWindow = window.open(
+      '/zone_boundary_drawer.html', 'zoneBoundaryEditor', 'width=1200,height=800'
+    );
+    if (!pendingBoundaryEditWindow) {
+      alert('Could not open the boundary editor -- check your browser\'s popup blocker.');
+    }
+  }
+
+  window.addEventListener('message', async (e) => {
+    if (e.origin !== window.location.origin || !e.data || !pendingBoundaryEditZone) return;
+
+    if (e.data.type === 'zone-editor-ready' && e.source === pendingBoundaryEditWindow) {
+      let geojson = pendingBoundaryEditZone.boundary_geojson;
+      if (typeof geojson === 'string') { try { geojson = JSON.parse(geojson); } catch { geojson = null; } }
+      pendingBoundaryEditWindow.postMessage({
+        type: 'zone-editor-prefill', geojson, zoneName: pendingBoundaryEditZone.zone_name,
+      }, window.location.origin);
+      return;
+    }
+
+    if (e.data.type === 'zone-editor-saved' && e.source === pendingBoundaryEditWindow) {
+      const zoneId = pendingBoundaryEditZone.id;
+      try {
+        await api(`/v1/flex-zones/${zoneId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ boundary_geojson: e.data.geojson }),
+        });
+        setStatus($('zonesStatus'), `Boundary updated for ${pendingBoundaryEditZone.zone_name}.`, 'ok');
+        await loadZones();
+      } catch (err) {
+        setStatus($('zonesStatus'), 'Could not save boundary: ' + err.message, 'err');
+      } finally {
+        pendingBoundaryEditZone = null;
+        pendingBoundaryEditWindow = null;
+      }
+    }
+  });
+
   function zoneViewRow(z) {
     const hasBoundary = !!z.boundary_geojson;
     return `
@@ -1348,6 +1406,7 @@
         <td>${hasBoundary ? 'Set' : '— none —'}</td>
         <td>
           <button class="secondary small zone-edit-btn" data-id="${z.id}">Edit</button>
+          <button class="secondary small zone-map-edit-btn" data-id="${z.id}">Map</button>
           <button class="danger small zone-delete-btn" data-id="${z.id}">Delete</button>
         </td>
       </tr>`;
@@ -1431,6 +1490,11 @@
       return;
     }
 
+    if (btn.classList.contains('zone-map-edit-btn')) {
+      openZoneBoundaryEditor(zone);
+      return;
+    }
+
     if (btn.classList.contains('zone-delete-btn')) {
       if (!confirm(`Delete flex zone "${zone.zone_name}"? This deactivates it — it will no longer be usable on new bookings.`)) return;
       try {
@@ -1506,9 +1570,12 @@
   async function loadFaresTabData() {
     if (!stopsCache.length) await loadStops();
     if (!zonesCache.length) await loadZones();
+    if (!state.routes || !state.routes.length) await loadRoutes();
     populateZoneMemberDropdowns();
     populateMixedFareDropdown($('mfOriginId'), $('mfOriginType').value);
     populateMixedFareDropdown($('mfDestId'), $('mfDestType').value);
+    $('mfRoute').innerHTML = '<option value="">Any route</option>' +
+      (state.routes || []).map(r => `<option value="${r.id}">${r.route_code} — ${r.long_name || r.short_name}</option>`).join('');
     await Promise.all([loadZoneMembers(), loadMixedFares()]);
   }
 
@@ -1571,6 +1638,7 @@
           <td>${m.origin_stop_name || m.origin_zone_name || '—'}</td>
           <td>${m.dest_stop_name || m.dest_zone_name || '—'}</td>
           <td>${Number(m.amount).toFixed(2)}</td>
+          <td>${m.route_name || 'Any route'}</td>
           <td><button class="danger small mf-delete-btn" data-id="${m.id}">Delete</button></td>
         </tr>`).join('');
       setStatus($('mixedFareStatus'), `${rows.length} fare${rows.length === 1 ? '' : 's'}.`, 'ok');
@@ -1595,6 +1663,7 @@
       dest_stop_id:   destType   === 'stop' ? destId   : null,
       dest_zone_id:   destType   === 'zone' ? destId   : null,
       amount,
+      route_id: $('mfRoute').value || null,
     };
     setStatus($('mixedFareStatus'), 'Creating…', 'info');
     try {
