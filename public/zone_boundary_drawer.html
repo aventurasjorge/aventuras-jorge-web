@@ -391,11 +391,25 @@ searchBox.addEventListener('input', () => {
       // run a separate shapefile-extraction pass. A plain address or an
       // informal place name (no official boundary anywhere) just won't have
       // a geojson field, and falls back to "click to pan, then hand-draw".
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&polygon_geojson=1&polygon_threshold=0.0005`,
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=10&polygon_geojson=1&polygon_threshold=0.0005`,
         { headers: { 'Accept': 'application/json' } });
-      const data = await res.json();
+      if (!res.ok) throw new Error('Search service returned HTTP ' + res.status);
+      let data = await res.json();
       searchResults.innerHTML = '';
-      if (!data.length) { searchResults.style.display = 'none'; return; }
+      const isPoly = it => it.geojson && (it.geojson.type === 'Polygon' || it.geojson.type === 'MultiPolygon');
+      // results with a real boundary first, so they are never buried below point results
+      data = data.slice().sort((a, b) => (isPoly(b) ? 1 : 0) - (isPoly(a) ? 1 : 0));
+      if (!data.length) {
+        searchResults.innerHTML = '<div class="result-row" style="cursor:default;color:#6b7280">No results. Try "Name Township, County, PA".</div>';
+        searchResults.style.display = 'block'; return;
+      }
+      if (!data.some(isPoly)) {
+        const note = document.createElement('div');
+        note.className = 'result-row';
+        note.style.cssText = 'cursor:default;color:#92400e;background:#fffbeb';
+        note.textContent = 'No official boundary found for these results. Try adding the type and county, e.g. "Norwegian Township, Schuylkill County, PA".';
+        searchResults.appendChild(note);
+      }
       data.forEach(item => {
         const row = document.createElement('div');
         row.className = 'result-row';
@@ -429,7 +443,10 @@ searchBox.addEventListener('input', () => {
         searchResults.appendChild(row);
       });
       searchResults.style.display = 'block';
-    } catch (err) { /* offline or blocked -- fine, presets still work */ }
+    } catch (err) {
+      searchResults.innerHTML = '<div class="result-row" style="cursor:default;color:#b91c1c">Search failed: ' + String(err.message || err).replace(/</g,'&lt;') + '. Presets still work.</div>';
+      searchResults.style.display = 'block';
+    }
   }, 400);
 });
 document.addEventListener('click', (e) => {
