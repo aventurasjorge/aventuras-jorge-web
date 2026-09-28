@@ -502,6 +502,41 @@
       </div>
 
       <div class="card">
+        <h2>Create a stop-to-stop fare</h2>
+        <div class="field-row">
+          <div>
+            <label for="psOrigin">Origin stop</label>
+            <select id="psOrigin"></select>
+          </div>
+          <div>
+            <label for="psDest">Destination stop</label>
+            <select id="psDest"></select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div>
+            <label for="psAmount">Fare amount</label>
+            <input type="number" id="psAmount" step="0.01" min="0" value="0">
+          </div>
+          <div>
+            <label for="psRoute">Route (optional — same pair can price differently per route)</label>
+            <select id="psRoute"><option value="">Any route</option></select>
+          </div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin:6px 0 10px">
+          <input type="checkbox" id="psReverse" checked style="width:auto"> Also create the reverse direction (destination → origin) at the same fare
+        </label>
+        <button id="createStopFareBtn">Create fare</button>
+        <div class="status-line" id="stopFareStatus"></div>
+        <div class="table-scroll">
+          <table id="stopFaresTable">
+            <thead><tr><th>Origin</th><th>Destination</th><th>Amount</th><th>Route</th><th>Actions</th></tr></thead>
+            <tbody id="stopFaresBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Create a fare (stop or zone on each side)</h2>
         <div class="field-row">
           <div>
@@ -533,6 +568,9 @@
             <select id="mfRoute"><option value="">Any route</option></select>
           </div>
         </div>
+        <label style="display:flex;align-items:center;gap:6px;margin:6px 0 10px">
+          <input type="checkbox" id="mfReverse" checked style="width:auto"> Also create the reverse direction (destination → origin) at the same fare
+        </label>
         <button id="createMixedFareBtn">Create fare</button>
         <div class="status-line" id="mixedFareStatus"></div>
         <div class="table-scroll">
@@ -1576,7 +1614,11 @@
     populateMixedFareDropdown($('mfDestId'), $('mfDestType').value);
     $('mfRoute').innerHTML = '<option value="">Any route</option>' +
       (state.routes || []).map(r => `<option value="${r.id}">${r.route_code} — ${r.long_name || r.short_name}</option>`).join('');
-    await Promise.all([loadZoneMembers(), loadMixedFares()]);
+    const stopOpts = stopsCache.map(st => `<option value="${st.id}">${st.stop_name} (${st.stop_code})</option>`).join('');
+    $('psOrigin').innerHTML = stopOpts;
+    $('psDest').innerHTML = stopOpts;
+    $('psRoute').innerHTML = $('mfRoute').innerHTML;
+    await Promise.all([loadZoneMembers(), loadMixedFares(), loadStopFares()]);
   }
 
   async function loadZoneMembers() {
@@ -1657,25 +1699,60 @@
       setStatus($('mixedFareStatus'), 'Pick both an origin and a destination.', 'err');
       return;
     }
-    const payload = {
-      origin_stop_id: originType === 'stop' ? originId : null,
-      origin_zone_id: originType === 'zone' ? originId : null,
-      dest_stop_id:   destType   === 'stop' ? destId   : null,
-      dest_zone_id:   destType   === 'zone' ? destId   : null,
+    // Intrazone travel (same zone on both sides, or two service zones that
+    // share a fare zone, or a fare zone and one of its own members) can be
+    // legitimate, so this warns and asks rather than blocking. Identical
+    // stop -> same stop is still rejected: that can never be a real trip.
+    const sameItem = originType === destType && originId === destId;
+    if (sameItem && originType === 'stop') {
+      setStatus($('mixedFareStatus'), 'Origin and destination must be different stops.', 'err');
+      return;
+    }
+    let intrazone = false;
+    if (originType === 'zone' && destType === 'zone') {
+      const fareZonesOf = id => zoneMembersCache.filter(m => m.service_zone_id === id).map(m => m.fare_zone_id);
+      const oFZ = fareZonesOf(originId), dFZ = fareZonesOf(destId);
+      intrazone = sameItem
+        || oFZ.some(f => dFZ.includes(f))          // members of a common fare zone
+        || oFZ.includes(destId) || dFZ.includes(originId); // fare zone <-> its own member
+    }
+    if (intrazone) {
+      const proceed = confirm(
+        'Warning: the origin and destination are in the same zone, so this prices travel within a zone.\n\n' +
+        'Continue only if intrazone travel is permitted.');
+      if (!proceed) { setStatus($('mixedFareStatus'), 'Cancelled — no fare created.', 'info'); return; }
+    }
+    const route_id = $('mfRoute').value || null;
+    const build = (oType, oId, dType, dId) => ({
+      origin_stop_id: oType === 'stop' ? oId : null,
+      origin_zone_id: oType === 'zone' ? oId : null,
+      dest_stop_id:   dType === 'stop' ? dId : null,
+      dest_zone_id:   dType === 'zone' ? dId : null,
       amount,
-      route_id: $('mfRoute').value || null,
-    };
+      route_id,
+    });
+    // Fares are directional (the lookup matches origin -> destination
+    // exactly), so the reverse row is a separate insert with sides swapped.
+    const payloads = [build(originType, originId, destType, destId)];
+    // the reverse of an identical zone -> same zone fare would be a duplicate row
+    if ($('mfReverse').checked && !sameItem) payloads.push(build(destType, destId, originType, originId));
     setStatus($('mixedFareStatus'), 'Creating…', 'info');
-    try {
-      const result = await api('/v1/fares/mixed-fares', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      setStatus($('mixedFareStatus'), result.message, 'ok');
-      await loadMixedFares();
-    } catch (e) {
-      setStatus($('mixedFareStatus'), 'Could not create fare: ' + e.message, 'err');
+    const failures = [];
+    for (const payload of payloads) {
+      try {
+        await api('/v1/fares/mixed-fares', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch (e) { failures.push(e.message); }
+    }
+    await loadMixedFares();
+    if (failures.length) {
+      setStatus($('mixedFareStatus'),
+        `${payloads.length - failures.length} of ${payloads.length} created. Could not create fare: ${failures[0]}`, 'err');
+    } else {
+      setStatus($('mixedFareStatus'), payloads.length === 2 ? 'Fare created in both directions.' : 'Fare created.', 'ok');
     }
   });
 
@@ -1687,6 +1764,69 @@
       await loadMixedFares();
     } catch (err) {
       setStatus($('mixedFareStatus'), 'Could not delete fare: ' + err.message, 'err');
+    }
+  });
+
+
+  // ── Stop-to-stop fares (point_to_point_fares) ──────────────────────────
+  // Fares are directional: the lookup matches origin -> destination exactly,
+  // so the "also create the reverse direction" box (on by default) inserts
+  // the return-trip row too.
+  async function loadStopFares() {
+    setStatus($('stopFareStatus'), 'Loading…', 'info');
+    try {
+      const rows = await api('/v1/fares/stop-fares');
+      $('stopFaresBody').innerHTML = rows.map(f => `
+        <tr>
+          <td>${f.origin_name}</td>
+          <td>${f.dest_name}</td>
+          <td>${Number(f.amount).toFixed(2)}</td>
+          <td>${f.route_name || 'Any route'}</td>
+          <td><button class="danger small sf-delete-btn" data-id="${f.id}">Delete</button></td>
+        </tr>`).join('');
+      setStatus($('stopFareStatus'), `${rows.length} fare${rows.length === 1 ? '' : 's'}.`, 'ok');
+    } catch (e) {
+      setStatus($('stopFareStatus'), 'Could not load fares: ' + e.message, 'err');
+    }
+  }
+
+  $('createStopFareBtn').addEventListener('click', async () => {
+    const o = $('psOrigin').value, d = $('psDest').value;
+    const amount = parseFloat($('psAmount').value || '0');
+    if (!o || !d) { setStatus($('stopFareStatus'), 'Pick both an origin and a destination stop.', 'err'); return; }
+    if (o === d) { setStatus($('stopFareStatus'), 'Origin and destination must be different stops.', 'err'); return; }
+    if (!(amount >= 0)) { setStatus($('stopFareStatus'), 'Enter a valid fare amount.', 'err'); return; }
+    const route_id = $('psRoute').value || null;
+    const pairs = [[o, d]];
+    if ($('psReverse').checked) pairs.push([d, o]);
+    setStatus($('stopFareStatus'), 'Creating…', 'info');
+    const failures = [];
+    for (const [a, b] of pairs) {
+      try {
+        await api('/v1/fares/stop-fares', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ origin_stop_id: a, dest_stop_id: b, amount, route_id }),
+        });
+      } catch (e) { failures.push(e.message); }
+    }
+    await loadStopFares();
+    if (failures.length) {
+      setStatus($('stopFareStatus'),
+        `${pairs.length - failures.length} of ${pairs.length} created. ${failures[0]} (a fare for that pair and route may already exist — delete it first to change the price).`, 'err');
+    } else {
+      setStatus($('stopFareStatus'), pairs.length === 2 ? 'Fare created in both directions.' : 'Fare created.', 'ok');
+    }
+  });
+
+  $('stopFaresBody').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.sf-delete-btn');
+    if (!btn) return;
+    try {
+      await api(`/v1/fares/stop-fares/${btn.dataset.id}`, { method: 'DELETE' });
+      await loadStopFares();
+    } catch (err) {
+      setStatus($('stopFareStatus'), 'Could not delete fare: ' + err.message, 'err');
     }
   });
 
