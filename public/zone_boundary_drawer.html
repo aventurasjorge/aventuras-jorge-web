@@ -113,7 +113,8 @@
         <div id="searchResults"></div>
       </div>
       <div class="hint">If a result has a real official boundary on file (a township, borough, or city), a
-        "Use boundary" button appears next to it — click that instead of hand-drawing. Otherwise
+        "Use boundary" button appears next to it — click that instead of hand-drawing. For a zone made of several
+        municipalities, use "Use boundary" for the first one, then search each next one and click "+ Add". Otherwise
         (informal place names like Diamondtown, or a plain address) clicking the result just pans
         the map there so you can trace it by hand below.</div>
       <div class="hint">Jump straight to one of the four zones that need manual tracing:</div>
@@ -438,6 +439,18 @@ searchBox.addEventListener('input', () => {
             searchBox.value = item.display_name;
           };
           row.appendChild(btn);
+          const addBtn = document.createElement('button');
+          addBtn.className = 'use-boundary-btn';
+          addBtn.textContent = '+ Add';
+          addBtn.title = 'Add this boundary to the shape already on the map (for zones made of several municipalities)';
+          addBtn.type = 'button';
+          addBtn.onclick = (e) => {
+            e.stopPropagation();
+            loadGeoJSONOntoMap(item.geojson, true);
+            searchResults.style.display = 'none';
+            searchBox.value = '';
+          };
+          row.appendChild(addBtn);
         }
 
         searchResults.appendChild(row);
@@ -502,18 +515,20 @@ function closedPartsCount(geo){
 // shape on file (see the Nominatim polygon_geojson search above). Loading
 // either way leaves the shape as fully editable points, same as hand-drawn
 // ones -- drag/undo/add-a-part all still work on it afterward.
-function loadGeoJSONOntoMap(geo){
+function loadGeoJSONOntoMap(geo, append){
   let rings = [];
   if (geo.type === 'Polygon') rings = [geo.coordinates[0]];
   else if (geo.type === 'MultiPolygon') rings = geo.coordinates.map(p => p[0]);
   else { alert('Only Polygon or MultiPolygon geometries are supported.'); return; }
 
-  parts = rings.map(ring => {
+  const newParts = rings.map(ring => {
     const pts = ring.map(([lng, lat]) => ({ lat, lng }));
     // drop the closing point if it duplicates the first
     if (pts.length > 1 && pts[0].lat === pts[pts.length-1].lat && pts[0].lng === pts[pts.length-1].lng) pts.pop();
     return { points: pts, finished: true };
   });
+  // append=true: keep what is already on the map and add these as extra parts
+  parts = append ? parts.filter(p => p.points.length >= 3).concat(newParts) : newParts;
   activeIdx = 0;
   redrawAll();
   // fit the map to the loaded shape
