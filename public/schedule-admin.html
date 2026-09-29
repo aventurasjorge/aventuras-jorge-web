@@ -285,6 +285,7 @@
       <button class="active" data-tab="upload">Upload schedule</button>
       <button data-tab="zones">Flex Zones</button>
       <button data-tab="fares">Fares</button>
+      <button data-tab="trips">Trips</button>
       <button data-tab="team">Team</button>
       <button class="secondary" id="logoutBtn" style="margin-left:auto;">Sign out</button>
     </div>
@@ -582,6 +583,31 @@
       </div>
     </div>
 
+    <!-- Trips tab -->
+    <div id="tab-trips" class="hidden">
+      <div class="card">
+        <h2>Find a trip</h2>
+        <div class="field-row">
+          <div>
+            <label for="tripsDate">Service date</label>
+            <input type="date" id="tripsDate">
+          </div>
+          <div>
+            <label for="tripsRoute">Route (optional)</label>
+            <select id="tripsRoute"><option value="">All routes</option></select>
+          </div>
+        </div>
+        <button id="tripsSearchBtn">Search</button>
+        <div class="status-line" id="tripsSearchStatus"></div>
+        <div class="table-scroll">
+          <table id="tripsTable">
+            <thead><tr><th>Route</th><th>Departs</th><th>Status</th><th>Seats</th><th>Delay</th><th>Actions</th></tr></thead>
+            <tbody id="tripsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- Team tab -->
     <div id="tab-team" class="hidden">
       <div class="notice">
@@ -709,12 +735,14 @@
       $('tab-upload').classList.toggle('hidden', btn.dataset.tab !== 'upload');
       $('tab-zones').classList.toggle('hidden', btn.dataset.tab !== 'zones');
       $('tab-fares').classList.toggle('hidden', btn.dataset.tab !== 'fares');
+      $('tab-trips').classList.toggle('hidden', btn.dataset.tab !== 'trips');
       $('tab-team').classList.toggle('hidden', btn.dataset.tab !== 'team');
       // Leaflet can't measure a hidden (display:none) container, so the
       // map is only (re)rendered once this tab actually becomes visible --
       // not eagerly on login, when it would still be hidden behind Upload.
       if (btn.dataset.tab === 'zones') refreshZonesMap();
       if (btn.dataset.tab === 'fares') loadFaresTabData();
+      if (btn.dataset.tab === 'trips') loadTripsTabData();
     });
   });
 
@@ -1787,6 +1815,114 @@
       setStatus($('stopFareStatus'), `${rows.length} fare${rows.length === 1 ? '' : 's'}.`, 'ok');
     } catch (e) {
       setStatus($('stopFareStatus'), 'Could not load fares: ' + e.message, 'err');
+    }
+  }
+
+  // ── Trips (delay management) ─────────────────────────────────────────
+  // A delay is a display-time OFFSET applied to the trip's stops (see the
+  // API's GET /:id/stops), not a rewrite of the schedule -- clearing it back
+  // to 0 restores the original times exactly, with nothing to undo.
+  let tripsCache = [];
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  async function loadTripsTabData() {
+    if (!state.routes || !state.routes.length) await loadRoutes();
+    if (!$('tripsDate').value) {
+      const d = new Date();
+      $('tripsDate').value = d.toISOString().slice(0, 10);
+    }
+    if (state.routes && state.routes.length && !$('tripsRoute').dataset.loaded) {
+      $('tripsRoute').innerHTML = '<option value="">All routes</option>' +
+        state.routes.map(r => `<option value="${r.id}">${r.route_code} — ${r.long_name || r.short_name}</option>`).join('');
+      $('tripsRoute').dataset.loaded = '1';
+    }
+    await searchTrips();
+  }
+
+  async function searchTrips() {
+    setStatus($('tripsSearchStatus'), 'Loading…', 'info');
+    try {
+      const params = new URLSearchParams();
+      if ($('tripsDate').value) params.set('date', $('tripsDate').value);
+      if ($('tripsRoute').value) params.set('route_id', $('tripsRoute').value);
+      const trips = await api('/v1/trips?' + params.toString());
+      tripsCache = trips;
+      renderTripsTable();
+      setStatus($('tripsSearchStatus'), `${trips.length} trip${trips.length === 1 ? '' : 's'}.`, 'ok');
+    } catch (e) {
+      setStatus($('tripsSearchStatus'), 'Could not load trips: ' + e.message, 'err');
+    }
+  }
+
+  function renderTripsTable() {
+    $('tripsBody').innerHTML = tripsCache.map(t => `
+      <tr data-id="${t.id}">
+        <td>${t.route_code}${t.trip_short_name ? ' · ' + t.trip_short_name : ''}</td>
+        <td>${fmtTime(t.trip_start_time)}</td>
+        <td>${t.status}</td>
+        <td>${t.available_seats != null ? t.available_seats + ' / ' + t.total_seats : '—'}</td>
+        <td class="trip-delay-cell">${t.delay_minutes ? `<strong>${t.delay_minutes} min</strong>` : '—'}</td>
+        <td>
+          <button class="small trip-delay-btn" data-id="${t.id}">Delay…</button>
+          ${t.delay_minutes ? `<button class="small secondary trip-clear-delay-btn" data-id="${t.id}">Clear</button>` : ''}
+        </td>
+      </tr>`).join('');
+  }
+
+  $('tripsSearchBtn').addEventListener('click', searchTrips);
+
+  $('tripsBody').addEventListener('click', async (e) => {
+    const delayBtn = e.target.closest('.trip-delay-btn');
+    const clearBtn = e.target.closest('.trip-clear-delay-btn');
+    if (delayBtn) {
+      const trip = tripsCache.find(t => t.id === delayBtn.dataset.id);
+      const current = trip && trip.delay_minutes ? trip.delay_minutes : 0;
+      const input = prompt(
+        'Delay this trip by how many minutes?\n\n' +
+        'This shifts the departure time and every intermediate stop time shown to passengers ' +
+        'and dispatchers by this many minutes, and immediately emails every actively-booked ' +
+        'passenger on this trip that their service is running late. It does not create a new ' +
+        'trip or move anyone\'s booking.',
+        String(current)
+      );
+      if (input === null) return;
+      const minutes = parseInt(input, 10);
+      if (isNaN(minutes) || minutes < 0 || minutes > 999) {
+        alert('Enter a whole number of minutes from 0 to 999.');
+        return;
+      }
+      if (minutes > 0 && !confirm(
+        `Set a ${minutes}-minute delay and email every actively-booked passenger on this trip now?`
+      )) return;
+      await setTripDelay(delayBtn.dataset.id, minutes);
+    } else if (clearBtn) {
+      if (!confirm('Clear this delay and restore the original schedule? No notification is sent for this.')) return;
+      await setTripDelay(clearBtn.dataset.id, 0);
+    }
+  });
+
+  async function setTripDelay(tripId, minutes) {
+    setStatus($('tripsSearchStatus'), 'Updating…', 'info');
+    try {
+      const result = await api(`/v1/trips/${tripId}/delay`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delay_minutes: minutes }),
+      });
+      const trip = tripsCache.find(t => t.id === tripId);
+      if (trip) trip.delay_minutes = minutes;
+      renderTripsTable();
+      setStatus($('tripsSearchStatus'),
+        minutes > 0
+          ? `Delay set to ${minutes} min. ${result.notified || 0} passenger${result.notified === 1 ? '' : 's'} notified.`
+          : 'Delay cleared. Original schedule restored.',
+        'ok');
+    } catch (e) {
+      setStatus($('tripsSearchStatus'), 'Could not update delay: ' + e.message, 'err');
     }
   }
 
