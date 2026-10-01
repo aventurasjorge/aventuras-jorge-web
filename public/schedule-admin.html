@@ -1865,7 +1865,7 @@
         <td>${fmtTime(t.trip_start_time)}</td>
         <td>${t.status}</td>
         <td>${t.available_seats != null ? t.available_seats + ' / ' + t.total_seats : '—'}</td>
-        <td class="trip-delay-cell">${t.delay_minutes ? `<strong>${t.delay_minutes} min</strong>` : '—'}</td>
+        <td class="trip-delay-cell">${t.delay_minutes ? `<strong>${t.delay_minutes > 0 ? t.delay_minutes + ' min late' : Math.abs(t.delay_minutes) + ' min early'}</strong>` : '—'}</td>
         <td>
           <button class="small trip-delay-btn" data-id="${t.id}">Delay…</button>
           ${t.delay_minutes ? `<button class="small secondary trip-clear-delay-btn" data-id="${t.id}">Clear</button>` : ''}
@@ -1882,21 +1882,23 @@
       const trip = tripsCache.find(t => t.id === delayBtn.dataset.id);
       const current = trip && trip.delay_minutes ? trip.delay_minutes : 0;
       const input = prompt(
-        'Delay this trip by how many minutes?\n\n' +
-        'This shifts the departure time and every intermediate stop time shown to passengers ' +
-        'and dispatchers by this many minutes, and immediately emails every actively-booked ' +
-        'passenger on this trip that their service is running late. It does not create a new ' +
-        'trip or move anyone\'s booking.',
+        'Shift this trip by how many minutes?\n\n' +
+        'Positive = running late, negative = running early. This shifts the departure time ' +
+        'and every intermediate stop time shown to passengers and dispatchers, and immediately ' +
+        'emails every actively-booked passenger on this trip. It does not create a new trip or ' +
+        'move anyone\'s booking.',
         String(current)
       );
       if (input === null) return;
       const minutes = parseInt(input, 10);
-      if (isNaN(minutes) || minutes < 0 || minutes > 999) {
-        alert('Enter a whole number of minutes from 0 to 999.');
+      if (isNaN(minutes) || minutes < -999 || minutes > 999) {
+        alert('Enter a whole number of minutes from -999 to 999 (negative = running early).');
         return;
       }
-      if (minutes > 0 && !confirm(
-        `Set a ${minutes}-minute delay and email every actively-booked passenger on this trip now?`
+      if (minutes !== 0 && !confirm(
+        minutes > 0
+          ? `Set a ${minutes}-minute delay and email every actively-booked passenger on this trip now?`
+          : `Mark this trip ${Math.abs(minutes)} minutes early and email every actively-booked passenger on this trip now?`
       )) return;
       await setTripDelay(delayBtn.dataset.id, minutes);
     } else if (clearBtn) {
@@ -1916,11 +1918,11 @@
       const trip = tripsCache.find(t => t.id === tripId);
       if (trip) trip.delay_minutes = minutes;
       renderTripsTable();
-      setStatus($('tripsSearchStatus'),
-        minutes > 0
-          ? `Delay set to ${minutes} min. ${result.notified || 0} passenger${result.notified === 1 ? '' : 's'} notified.`
-          : 'Delay cleared. Original schedule restored.',
-        'ok');
+      let msg;
+      if (minutes > 0) msg = `Delay set to ${minutes} min. ${result.notified || 0} passenger${result.notified === 1 ? '' : 's'} notified.`;
+      else if (minutes < 0) msg = `Marked ${Math.abs(minutes)} min early. ${result.notified || 0} passenger${result.notified === 1 ? '' : 's'} notified.`;
+      else msg = 'Delay cleared. Original schedule restored.';
+      setStatus($('tripsSearchStatus'), msg, 'ok');
     } catch (e) {
       setStatus($('tripsSearchStatus'), 'Could not update delay: ' + e.message, 'err');
     }
