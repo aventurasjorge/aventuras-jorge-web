@@ -761,7 +761,7 @@
       const created = await api('/v1/routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ route_code, short_name, long_name, description: description || undefined })
+        body: JSON.stringify({ route_code, route_name: long_name, description: description || undefined })
       });
       setStatus($('createRouteStatus'), `Route "${route_code}" created and selected above — double-check before uploading.`, 'ok');
       $('newRouteCode').value = '';
